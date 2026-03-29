@@ -1,0 +1,5 @@
+#!/usr/bin/with-contenv bashio
+# ==============================================================================
+# HK Web App – Node-Server (Ingress + WebSocket-Proxy zum HA-Core)
+# ==============================================================================
+exec node /app/server.mjs
