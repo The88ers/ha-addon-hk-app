@@ -1,4 +1,4 @@
-# Anforderungen – Home Assistant App (Add-on) „HK Web App“
+# Anforderungen – Home Assistant App (Add-on) „HK Addon“
 
 Dieses Dokument beschreibt die funktionalen und technischen Anforderungen für die **Home-Assistant-App** (Docker-Container; umgangssprachlich oft „Add-on“) im Ordner **HA ADDON HK APP**. Inhaltlich basiert es auf der bestehenden **HK Web App** (`liquid-glass-app.js` im Projektordner `APP Web app HA/hkweb-app` bzw. aktuelle Releases wie `hkweb-app-v2.1.x`) und auf `APP Web app HA/APP Anforderungen.MD`.
 
@@ -171,7 +171,7 @@ Das Add-on benötigt dafür **Internetzugang** (Container-Netzwerk); bei Fehlern
 
 ```mermaid
 flowchart LR
-  subgraph UI["HK Web App UI"]
+  subgraph UI["HK Addon UI"]
     Karten[Klappenkarten]
     Setup[Setup / Entities]
   end

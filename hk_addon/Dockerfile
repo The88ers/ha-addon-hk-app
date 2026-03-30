@@ -28,11 +28,11 @@ RUN npm ci --omit=dev || npm install --omit=dev
 COPY app/ ./
 
 COPY rootfs /
-RUN chmod a+x /etc/services.d/hk-web-app/run
+RUN chmod a+x /etc/services.d/hk-addon/run
 
 LABEL \
     io.hass.type="addon" \
-    org.opencontainers.image.title="HK Web App" \
+    org.opencontainers.image.title="HK Addon" \
     org.opencontainers.image.description="Hühnerklappe – Web-UI und Scheduler für Home Assistant" \
     org.opencontainers.image.source="https://github.com/The88ers/ha-addon-hk-app" \
     org.opencontainers.image.licenses="Apache License 2.0"

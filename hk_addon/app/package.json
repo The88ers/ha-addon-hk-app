@@ -1,6 +1,6 @@
 {
-  "name": "hk-web-app-addon",
-  "version": "0.1.0",
+  "name": "hk-addon",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "dependencies": {

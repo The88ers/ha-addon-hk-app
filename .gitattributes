@@ -1,0 +1,13 @@
+# Home Assistant baut auf Linux – YAML/Scripts mit LF committen
+* text=auto
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+Dockerfile text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.json text eol=lf
+apparmor.txt text eol=lf
+**/services.d/**/run text eol=lf

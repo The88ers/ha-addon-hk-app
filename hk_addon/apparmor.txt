@@ -1,0 +1,55 @@
+#include <tunables/global>
+
+profile hk_addon flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # Capabilities
+  file,
+  signal (send) set=(kill,term,int,hup,cont),
+
+  # S6-Overlay
+  /init ix,
+  /bin/** ix,
+  /usr/bin/** ix,
+  /run/{s6,s6-rc*,service}/** ix,
+  /package/** ix,
+  /command/** ix,
+  /etc/services.d/** rwix,
+  /etc/cont-init.d/** rwix,
+  /etc/cont-finish.d/** rwix,
+  /run/{,**} rwk,
+  /dev/tty rw,
+
+  # Bashio
+  /usr/lib/bashio/** ix,
+  /tmp/** rwk,
+
+  /data/** rw,
+
+ /usr/bin/node cx -> hk_addon_node,
+
+ profile hk_addon_node flags=(attach_disconnected,mediate_deleted) {
+    #include <abstractions/base>
+
+ signal (receive) peer=*_hk_addon,
+
+    /data/** rw,
+    /share/** rw,
+    /tmp/** rwk,
+
+    /usr/bin/node r,
+    /app/** r,
+    /usr/lib/** mr,
+    /lib/** mr,
+    /bin/sh ix,
+    /bin/bash rix,
+    /etc/passwd r,
+    /etc/resolv.conf r,
+    /proc/** r,
+    /dev/tty rw,
+
+    network inet stream,
+    network inet6 stream,
+    network unix stream,
+  }
+}

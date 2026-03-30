@@ -74,6 +74,6 @@ app.post('/api/ha/services/:domain/:service', async (req, res) => {
 const server = http.createServer(app);
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`HK Web App listening on ${PORT}`);
+  console.log(`HK Addon listening on ${PORT}`);
   startScheduler(console.log);
 });

@@ -1,4 +1,4 @@
-# HK Web App
+# HK Addon
 
 ## Übersicht
 
@@ -12,7 +12,7 @@ Web-Oberfläche über **Ingress**. Der Dienst nutzt die Home-Assistant-REST-API 
 ## Nach der Installation
 
 1. Add-on **Starten**.
-2. **„Open Web UI“** oder Sidebar-Eintrag **HK Web App** öffnen.
+2. **„Open Web UI“** oder Sidebar-Eintrag **HK Addon** öffnen.
 3. Wenn die Statuszeile **„HA-API bereit“** zeigt, ist die Verbindung zum Core in Ordnung.
 
 ## Konfiguration
@@ -30,8 +30,8 @@ Profildatei `apparmor.txt` im Add-on-Ordner. Sollte der Start mit AppArmor-Fehle
 ## Entwicklung / lokaler Docker-Build
 
 ```bash
-cd hk_web_app
-docker build --build-arg BUILD_FROM=ghcr.io/home-assistant/base:3.23 -t hk-web-app:local .
+cd hk_addon
+docker build --build-arg BUILD_FROM=ghcr.io/home-assistant/base:3.23 -t hk-addon:local .
 ```
 
 `SUPERVISOR_TOKEN` existiert nur im Supervisor-Kontext; lokal ohne HA ist die HA-API nicht erreichbar.

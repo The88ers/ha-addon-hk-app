@@ -1,7 +1,7 @@
 # https://developers.home-assistant.io/docs/apps/configuration
-name: HK Web App
-version: "0.1.0"
-slug: hk_web_app
+name: HK Addon
+version: "0.1.1"
+slug: hk_addon
 description: Steuerung der Hühnerklappe(n) über Home Assistant (Ingress-UI, Scheduler im Add-on)
 url: "https://github.com/The88ers/ha-addon-hk-app"
 arch:
@@ -17,4 +17,4 @@ watchdog: http://[HOST]:[PORT:8099]/api/health
 map:
   - share:rw
 options: {}
-schema: {}
+schema: false

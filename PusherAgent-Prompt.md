@@ -29,8 +29,8 @@ Zuerst `cd` in diesen Ordner. **Nicht** aus `Repro`, nicht aus dem übergeordnet
 ## Versionierung (SemVer, eine Quelle der Wahrheit)
 
 - **Format:** `MAJOR.MINOR.PATCH` (z. B. `0.1.0`). Regeln: **MAJOR** = breaking / große Umbauten, **MINOR** = neue Funktion abwärtskompatibel, **PATCH** = Fixes / kleine Anpassungen.
-- **Primär:** `hk_web_app/config.yaml` → Zeile `version: "X.Y.Z"` (Home Assistant liest das).
-- **Synchron halten:** `hk_web_app/app/package.json` → Feld `"version"` **dieselbe** Zeichenkette wie in `config.yaml`.
+- **Primär:** `hk_addon/config.yaml` → Zeile `version: "X.Y.Z"` (Home Assistant liest das).
+- **Synchron halten:** `hk_addon/app/package.json` → Feld `"version"` **dieselbe** Zeichenkette wie in `config.yaml`.
 - **Changelog:** `CHANGELOG.md` im **Repo-Wurzel** (dieser Ordner). Neue Releases mit Datum und kurzen Stichpunkten unter einer neuen Überschrift `## [X.Y.Z] – YYYY-MM-DD`.
 - **GitHub „Versionierung“:** Nach jedem **Release**-Lauf einen **annotated** Tag `vX.Y.Z` setzen und mit `git push origin main` und **`git push origin vX.Y.Z`** (oder `git push --tags`) hochladen. Auf GitHub erscheint der Tag unter *Releases* / Tags; optional kann der Nutzer daraus eine „GitHub Release“-Notiz manuell oder per `gh release` erstellen.
 
@@ -54,7 +54,7 @@ Wenn der Nutzer **nur** „Push“ (oder gleichbedeutend: Änderungen hochladen 
 Wenn der Nutzer **Release** sagt (ggf. mit Stufe):
 
 1. Wie bei Push prüfen; es müssen **alle** gewünschten Änderungen bereits im Working Tree oder in einem vorherigen Commit sein. **Release** bedeutet: **Version erhöhen**, Changelog schreiben, **committen**, **taggen**, **pushen**.
-2. Aktuelle Version aus `hk_web_app/config.yaml` lesen (`version: "…"`).
+2. Aktuelle Version aus `hk_addon/config.yaml` lesen (`version: "…"`).
 3. SemVer erhöhen:
    - `Release` oder `Release patch` → PATCH +1  
    - `Release minor` → MINOR +1, PATCH = 0  
@@ -115,4 +115,4 @@ Wenn der Nutzer ausdrücklich **„Push ohne Version“**, **„ohne Release“*
 ## Kurz-Prompt (Minimal)
 
 > **Push:** Im Ordner `d:\Projekte\Hühnerklappe\MOTOR TEST\Projektordner Hühnerklappe\HA ADDON HK APP` → `git status`, sinnvoll committen, `git push` zu `origin`/`main`, **ohne** Versionsbump und ohne Tag.  
-> **Release patch** (oder minor/major): Version in `hk_web_app/config.yaml` + `hk_web_app/app/package.json` erhöhen, `CHANGELOG.md` ergänzen, Commit `Release vX.Y.Z`, annotated Tag `vX.Y.Z`, `git push` + `git push origin vX.Y.Z`. Kein Force-Push auf `main`. Details: `PusherAgent-Prompt.md`, `GithubInfo.md`.
+> **Release patch** (oder minor/major): Version in `hk_addon/config.yaml` + `hk_addon/app/package.json` erhöhen, `CHANGELOG.md` ergänzen, Commit `Release vX.Y.Z`, annotated Tag `vX.Y.Z`, `git push` + `git push origin vX.Y.Z`. Kein Force-Push auf `main`. Details: `PusherAgent-Prompt.md`, `GithubInfo.md`.
