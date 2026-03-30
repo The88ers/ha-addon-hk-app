@@ -4,24 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>HK Addon</title>
-  <link rel="stylesheet" href="styles.css" />
+  <style>
+    html, body { margin: 0; height: 100%; }
+    #host { height: 100%; min-height: 100vh; }
+    hk-web-app { display: block; height: 100%; min-height: 100vh; }
+  </style>
 </head>
 <body>
-  <header class="top">
-    <h1>HK Addon</h1>
-    <span id="health" class="badge">…</span>
-  </header>
-  <main class="main">
-    <p class="lead">
-      Add-on v0.1.5 – Verbindung zu Home Assistant über den Supervisor (<code>SUPERVISOR_TOKEN</code>).
-      Die vollständige Klappen-UI folgt (Portierung aus <code>liquid-glass-app.js</code>).
-    </p>
-    <section class="card">
-      <h2>Zustände (Auszug)</h2>
-      <button type="button" id="refresh" class="btn">Aktualisieren</button>
-      <pre id="states" class="pre">Lade …</pre>
-    </section>
-  </main>
-  <script type="module" src="main.js"></script>
+  <div id="host"></div>
+  <script type="module" src="addon-entry.mjs"></script>
 </body>
 </html>
