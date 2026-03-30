@@ -1,7 +1,16 @@
+/** Ingress: kein führendes „/“ – sonst trifft fetch die HA-Root-API (/api/…) statt des Add-ons → 404 */
+function addonApi(path) {
+  const p = path.startsWith('/') ? path.slice(1) : path;
+  const base = window.location.pathname.endsWith('/')
+    ? window.location.pathname
+    : `${window.location.pathname}/`;
+  return `${base}${p}`;
+}
+
 async function loadHealth() {
   const el = document.getElementById('health');
   try {
-    const r = await fetch('/api/health');
+    const r = await fetch(addonApi('/api/health'));
     const j = await r.json();
     if (j.ok && j.hasSupervisorToken) {
       el.textContent = 'HA-API bereit';
@@ -20,7 +29,7 @@ async function loadStates() {
   const pre = document.getElementById('states');
   pre.textContent = 'Lade …';
   try {
-    const r = await fetch('/api/ha/states');
+    const r = await fetch(addonApi('/api/ha/states'));
     if (!r.ok) {
       const t = await r.text();
       pre.textContent = `HTTP ${r.status}\n${t}`;
