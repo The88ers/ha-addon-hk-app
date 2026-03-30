@@ -21,6 +21,13 @@ function statesArrayToMap(states) {
   return o;
 }
 
+function pushHass(app, baseHass, statesMap) {
+  app.hass = { ...baseHass, states: statesMap };
+  if (typeof app.requestUpdate === 'function') {
+    app.requestUpdate();
+  }
+}
+
 /** @param {HTMLElement} app – <hk-web-app> */
 export function mountHassBridge(app) {
   const callService = async (domain, service, serviceData = {}, target = {}) => {
@@ -49,16 +56,43 @@ export function mountHassBridge(app) {
   async function poll() {
     try {
       const r = await fetch(addonApi('/api/ha/states'));
-      if (!r.ok) return;
-      const arr = await r.json();
+      const text = await r.text();
+      if (!r.ok) {
+        window.__HK_ADDON_HA_LAST_ERROR__ = `HTTP ${r.status}: ${text.slice(0, 400)}`;
+        window.__HK_ADDON_HA_STATE_COUNT__ = 0;
+        console.error('[HK Add-on][hass-bridge]', window.__HK_ADDON_HA_LAST_ERROR__);
+        pushHass(app, baseHass, {});
+        return;
+      }
+      let arr;
+      try {
+        arr = JSON.parse(text);
+      } catch (e) {
+        window.__HK_ADDON_HA_LAST_ERROR__ = 'Ungültige JSON-Antwort von /api/ha/states';
+        window.__HK_ADDON_HA_STATE_COUNT__ = 0;
+        console.error('[HK Add-on][hass-bridge]', e, text.slice(0, 200));
+        pushHass(app, baseHass, {});
+        return;
+      }
+      if (!Array.isArray(arr)) {
+        window.__HK_ADDON_HA_LAST_ERROR__ = 'Antwort ist kein State-Array';
+        window.__HK_ADDON_HA_STATE_COUNT__ = 0;
+        pushHass(app, baseHass, {});
+        return;
+      }
+      window.__HK_ADDON_HA_LAST_ERROR__ = null;
+      window.__HK_ADDON_HA_STATE_COUNT__ = arr.length;
       const statesMap = statesArrayToMap(arr);
-      app.hass = { ...baseHass, states: statesMap };
+      pushHass(app, baseHass, statesMap);
     } catch (e) {
-      console.warn('[HK Add-on][hass-bridge]', e);
+      window.__HK_ADDON_HA_LAST_ERROR__ = String(e?.message || e);
+      window.__HK_ADDON_HA_STATE_COUNT__ = 0;
+      console.error('[HK Add-on][hass-bridge]', e);
+      pushHass(app, baseHass, {});
     }
   }
 
-  app.hass = { ...baseHass, states: {} };
+  pushHass(app, baseHass, {});
   setInterval(poll, 500);
   poll();
 }

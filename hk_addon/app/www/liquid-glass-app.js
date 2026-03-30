@@ -36,7 +36,10 @@ class HKWebApp extends LitElement {
 
   static get properties() {
     return {
-      hass: { type: Object },
+      hass: {
+        type: Object,
+        hasChanged: (n, o) => n !== o,
+      },
       activeTab: { type: String },
       theme: { type: String },
       cardAlpha: { type: Number },
@@ -444,6 +447,12 @@ class HKWebApp extends LitElement {
 
   loadKlappenConfig() {
     const saved = localStorage.getItem('hkweb_klappen_config');
+    const entityFields = [
+      'statusEntity', 'zustandEntity', 'lastActionEntity',
+      'endstopObenEntity', 'endstopUntenEntity',
+      'buttonOeffnen', 'buttonSchliessen', 'buttonStop', 'buttonReset', 'buttonZentrale',
+      'speedEntity', 'accelEntity', 'motorEnableEntity',
+    ];
     if (saved) {
       try {
         const savedConfig = JSON.parse(saved);
@@ -452,14 +461,19 @@ class HKWebApp extends LitElement {
         const merged = defaultConfig.map(defaultKlappe => {
           const savedKlappe = savedConfig.find(k => k.id === defaultKlappe.id);
           if (savedKlappe) {
-            // Merge: Behalte gespeicherte Werte, aber verwende Default für fehlende Felder
-            return {
+            // Leere Strings aus localStorage dürfen Defaults (z. B. button.*) nicht überschreiben
+            const merged = {
               ...defaultKlappe,
               ...savedKlappe,
-              // Stelle sicher, dass id und name immer gesetzt sind
               id: defaultKlappe.id,
               name: savedKlappe.name || defaultKlappe.name,
             };
+            for (const f of entityFields) {
+              const v = savedKlappe[f];
+              merged[f] =
+                v != null && String(v).trim() !== '' ? v : defaultKlappe[f];
+            }
+            return merged;
           }
           return defaultKlappe;
         });
@@ -1214,7 +1228,19 @@ class HKWebApp extends LitElement {
 
   renderKlappen() {
     const klappen = this.getKlappenConfig();
+    const addonErr =
+      typeof window !== 'undefined' && window.__HK_ADDON__ && window.__HK_ADDON_HA_LAST_ERROR__;
     return html`
+      ${addonErr
+        ? html`
+            <div class="addon-connect-banner">
+              <strong>Home Assistant API:</strong> ${addonErr}<br />
+              <span class="addon-connect-hint"
+                >Add-on-Log prüfen. Unter Add-on „Konfiguration“ muss <code>homeassistant_api</code> aktiv sein; danach Add-on neu starten.</span
+              >
+            </div>
+          `
+        : ''}
       <div class="content-header">
         <h1>Klappen</h1>
         <svg class="menu-icon" viewBox="0 0 24 24"><path fill="#3a4252" d="M3 6h18M3 12h18M3 18h18"/></svg>
@@ -2141,6 +2167,23 @@ class HKWebApp extends LitElement {
           flex-direction: column;
           align-items: flex-start;
         }
+      }
+      .addon-connect-banner {
+        margin-bottom: 16px;
+        padding: 12px 16px;
+        border-radius: 12px;
+        background: rgba(200, 60, 60, 0.12);
+        border: 1px solid rgba(200, 60, 60, 0.35);
+        color: var(--liq-text, #2a2e3a);
+        font-size: 0.88rem;
+        line-height: 1.45;
+      }
+      .addon-connect-hint {
+        opacity: 0.9;
+        font-size: 0.82rem;
+      }
+      .addon-connect-banner code {
+        font-size: 0.85em;
       }
       .cards-row {
         display: flex;

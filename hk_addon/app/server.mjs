@@ -45,6 +45,9 @@ app.get('/api/ha/states', async (_req, res) => {
   try {
     const r = await fetch(`${HA_API}/states`, { headers: haHeaders() });
     const text = await r.text();
+    if (!r.ok) {
+      console.error('[api/ha/states] Supervisor:', r.status, text.slice(0, 500));
+    }
     res.status(r.status).type('application/json').send(text);
   } catch (e) {
     console.error('[api/ha/states]', e);
@@ -69,6 +72,9 @@ app.post('/api/ha/services/:domain/:service', async (req, res) => {
       body: JSON.stringify(req.body ?? {}),
     });
     const text = await r.text();
+    if (!r.ok) {
+      console.error(`[api/ha/services] ${domain}.${service}`, r.status, text.slice(0, 400));
+    }
     res.status(r.status).type('application/json').send(text);
   } catch (e) {
     console.error('[api/ha/services]', e);
