@@ -3,6 +3,15 @@
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/).  
 Die **Versionsnummer** entspricht `version` in `hk_addon/config.yaml` (Quelle für Home Assistant).
 
+## [0.2.5] – 2026-03-30
+
+### Added
+- **Notizen:** neuer Reiter; Text in `localStorage` (`hkweb_notes`) und im Add-on mit unter `/data/hkweb-settings.json` gesichert.
+
+### Changed
+- **Klappen-Störung:** Status-Anzeige rot, deutlich pulsierend (`pulse-stoerung`).
+- **Mobil:** Hauptbereich wird bei fixierter Sidebar eingerückt (60px / 220px), Kacheln mit sichtbarer Kante; gleiche `.content`-Regeln für alle Reiter.
+
 ## [0.2.4] – 2026-03-30
 
 ### Added
@@ -36,6 +45,7 @@ Die **Versionsnummer** entspricht `version` in `hk_addon/config.yaml` (Quelle f�
 - Erstes Add-on-Gerüst: `hk_addon` mit Ingress, Node-Server, REST-Proxy zur HA-API (`SUPERVISOR_TOKEN`), Scheduler-Stub, Platzhalter-UI.
 - `repository.yaml`, Übersetzungen (`translations/`), `apparmor.txt`, Watchdog-URL, Doku für Installation über GitHub.
 
+[0.2.5]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.2.5
 [0.2.4]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.2.4
 [0.1.3]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.1.3
 [0.1.2]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.1.2

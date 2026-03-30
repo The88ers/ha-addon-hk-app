@@ -69,6 +69,8 @@ class HKWebApp extends LitElement {
       /** Tab „Log“: app | addon */
       logPanelTab: { type: String },
       addonLogLines: { type: Array },
+      /** Persistiert (hkweb_notes → /data über buildSettingsSnapshot) */
+      userNotes: { type: String },
     };
   }
 
@@ -96,6 +98,7 @@ class HKWebApp extends LitElement {
     this.entityAutoRepairBusy = false;
     this.logPanelTab = 'app';
     this.addonLogLines = [];
+    this.userNotes = localStorage.getItem('hkweb_notes') || '';
     this._persistTimer = null;
     this._suppressPersist = false;
     this._addonLogPollTimer = null;
@@ -188,6 +191,7 @@ class HKWebApp extends LitElement {
       this.fetchSunriseSunset();
     }
     this.entityValidation = this.hass?.states ? this.validateAllEntities() : {};
+    this.userNotes = localStorage.getItem('hkweb_notes') || '';
   }
 
   async _loadAutosaveFromServerIfPresent() {
@@ -1450,14 +1454,22 @@ class HKWebApp extends LitElement {
     if (statusLower.includes('offen') || statusLower === 'offen') return 'offen';
     if (statusLower.includes('geschlossen') || statusLower === 'geschlossen') return 'geschlossen';
     if (statusLower.includes('bewegung') || statusLower.includes('fahrt')) return 'in-bewegung';
-    if (statusLower.includes('störung')) return 'stoerung';
+    if (statusLower.includes('störung') || statusLower.includes('storung')) return 'stoerung';
     return '';
+  }
+
+  updateUserNotes(value) {
+    const v = value != null ? String(value) : '';
+    this.userNotes = v;
+    localStorage.setItem('hkweb_notes', v);
+    this._schedulePersistToData();
   }
 
   renderSidebar() {
     const tabs = [
       { id: 'klappen', label: 'Klappen', icon: this.icon('tabler:layout-grid') },
       { id: 'modi', label: 'Modi', icon: this.icon('tabler:calendar') },
+      { id: 'notizen', label: 'Notizen', icon: this.icon('tabler:notes') },
       { id: 'einstellungen', label: 'Einstellungen', icon: this.icon('tabler:settings') },
       { id: 'sicherheit', label: 'Sicherheit', icon: this.icon('tabler:shield-lock') },
       { id: 'setup', label: 'Setup', icon: this.icon('tabler:tools') },
@@ -2351,6 +2363,28 @@ class HKWebApp extends LitElement {
     `;
   }
 
+  renderNotizen() {
+    return html`
+      <div class="content-header">
+        <h1>Notizen</h1>
+      </div>
+      <div class="glass-card glass-card--notizen">
+        <p class="notizen-hint">
+          Text wird lokal im Browser gehalten und im <strong>Home-Assistant-Add-on</strong> zusätzlich mit den
+          Einstellungen unter <code>/data/hkweb-settings.json</code> gesichert.
+        </p>
+        <textarea
+          class="notizen-textarea"
+          .value=${this.userNotes}
+          @input=${(e) => this.updateUserNotes(e.target.value)}
+          placeholder="Listen, Termine, Hinweise zur Klappe …"
+          spellcheck="true"
+          rows="16"
+        ></textarea>
+      </div>
+    `;
+  }
+
   renderContent() {
     switch (this.activeTab) {
       case 'klappen':
@@ -2359,6 +2393,8 @@ class HKWebApp extends LitElement {
         return this.renderSetup();
       case 'modi':
         return this.renderModi();
+      case 'notizen':
+        return this.renderNotizen();
       case 'einstellungen':
         return this.renderEinstellungen();
       case 'log':
@@ -2554,8 +2590,20 @@ class HKWebApp extends LitElement {
         overflow-y: auto;
       }
       @media (max-width: 768px) {
-        .content {
-          padding: 24px 16px;
+        /* Sidebar ist position:fixed → Inhalt ohne Einrückung liegt darunter */
+        .container.sidebar-strip-narrow .content {
+          margin-left: 60px;
+          flex: 1;
+          min-width: 0;
+          box-sizing: border-box;
+          padding: 20px 14px 28px 14px;
+        }
+        .container.sidebar-strip-wide .content {
+          margin-left: 220px;
+          flex: 1;
+          min-width: 0;
+          box-sizing: border-box;
+          padding: 20px 14px 28px 14px;
         }
       }
       .content-header h1 {
@@ -2624,8 +2672,55 @@ class HKWebApp extends LitElement {
           min-width: auto;
           max-width: 100%;
           width: 100%;
-          padding: 32px 24px;
+          padding: 28px 20px;
+          border: 2px solid rgba(255, 255, 255, 0.45);
+          box-shadow:
+            0 10px 36px var(--liq-shadow, rgba(31, 38, 135, 0.18)),
+            inset 0 1px 0 rgba(255, 255, 255, 0.45);
         }
+      }
+      .glass-card--notizen {
+        max-width: min(720px, 100%);
+        width: 100%;
+        align-self: stretch;
+        align-items: stretch;
+        padding-top: 28px;
+        padding-bottom: 28px;
+      }
+      .notizen-hint {
+        margin: 0 0 16px 0;
+        font-size: 0.85rem;
+        line-height: 1.45;
+        color: var(--liq-text, #2a2e3a);
+        opacity: 0.88;
+        text-align: left;
+        width: 100%;
+      }
+      .notizen-hint code {
+        font-size: 0.8rem;
+        padding: 2px 6px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.06);
+      }
+      .notizen-textarea {
+        width: 100%;
+        display: block;
+        box-sizing: border-box;
+        min-height: 260px;
+        resize: vertical;
+        font-family: inherit;
+        font-size: 1rem;
+        line-height: 1.5;
+        padding: 14px 16px;
+        border-radius: 14px;
+        border: 1.5px solid rgba(255, 255, 255, 0.35);
+        background: rgba(255, 255, 255, 0.45);
+        color: var(--liq-text, #2a2e3a);
+        outline: none;
+      }
+      .notizen-textarea:focus {
+        border-color: #007aff;
+        box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
       }
       .glass-card:hover {
         box-shadow: 0 16px 56px 0 var(--liq-shadow, rgba(31, 38, 135, 0.20));
@@ -2685,10 +2780,10 @@ class HKWebApp extends LitElement {
         border: 2px solid #ffd699;
       }
       .status-indicator.stoerung {
-        color: #8e8e93;
-        background: rgba(142, 142, 147, 0.12);
-        border: 2px solid #d1d1d6;
-        border-style: dashed;
+        color: #c41e1e;
+        background: rgba(255, 59, 48, 0.18);
+        border: 2px solid #ff3b30;
+        animation: pulse-stoerung 1.1s ease-in-out infinite;
       }
       @keyframes pulse-red {
         0% { box-shadow: 0 0 0 0 rgba(255,59,48,0.25);}
@@ -2704,6 +2799,20 @@ class HKWebApp extends LitElement {
         0% { box-shadow: 0 0 0 0 rgba(255,149,0,0.25);}
         70% { box-shadow: 0 0 24px 12px rgba(255,149,0,0.18);}
         100% { box-shadow: 0 0 0 0 rgba(255,149,0,0.25);}
+      }
+      @keyframes pulse-stoerung {
+        0% {
+          box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.55);
+          filter: brightness(1);
+        }
+        50% {
+          box-shadow: 0 0 28px 14px rgba(255, 59, 48, 0.45);
+          filter: brightness(1.08);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.55);
+          filter: brightness(1);
+        }
       }
       .status-details {
         width: 90%;
@@ -3689,6 +3798,12 @@ class HKWebApp extends LitElement {
         padding-bottom: 8px;
         border-bottom: 1px solid rgba(0,0,0,0.1);
       }
+      @media (max-width: 768px) {
+        .setup-section {
+          border: 2px solid rgba(255, 255, 255, 0.42);
+          box-shadow: 0 6px 22px rgba(31, 38, 135, 0.12);
+        }
+      }
       .entity-input-row {
         display: flex;
         align-items: center;
@@ -4148,6 +4263,8 @@ class HKWebApp extends LitElement {
         return html`<svg viewBox="0 0 24 24" fill="none" stroke="${iconColor}" stroke-width="2"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg>`;
       case 'tabler:calendar':
         return html`<svg viewBox="0 0 24 24" fill="none" stroke="${iconColor}" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4" stroke-linecap="round"/></svg>`;
+      case 'tabler:notes':
+        return html`<svg viewBox="0 0 24 24" fill="none" stroke="${iconColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5h-2a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-12a2 2 0 0 0-2-2h-2"/><path d="M9 3v4a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V3"/><path d="M9 12h6M9 16h6"/></svg>`;
       case 'tabler:settings':
         return html`<svg viewBox="0 0 24 24" fill="none" stroke="${iconColor}" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09A1.65 1.65 0 0 0 9 3.09V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.09a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
       case 'tabler:shield-lock':
@@ -4345,8 +4462,9 @@ class HKWebApp extends LitElement {
       `;
     }
     const showOverlay = this.isMobile() && !this.sidebarCollapsed;
+    const stripClass = this.sidebarCollapsed ? 'sidebar-strip-narrow' : 'sidebar-strip-wide';
     return html`
-      <div class="container">
+      <div class="container ${stripClass}">
         ${this.renderSidebar()}
         ${showOverlay 
           ? html`<div class="sidebar-overlay" @click=${() => this.toggleSidebar()}></div>`
