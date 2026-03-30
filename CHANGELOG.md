@@ -3,6 +3,12 @@
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/).  
 Die **Versionsnummer** entspricht `version` in `hk_addon/config.yaml` (Quelle für Home Assistant).
 
+## [0.2.7] – 2026-03-30
+
+### Changed
+- **Layout:** Karten wachsen mit dem Inhalt, kein Scrollen innerhalb der Kästen; Seiten-Scroll über `index.html` / Host ohne feste `height: 100%`; Karten-Schatten entfernt.
+- **Sidebar:** fixiert am linken und oberen Bildschirmrand (`100vh` / `100dvh`, Safe-Area); schmaler (ca. 180px / 56px eingeklappt, mobil 48px); Inhalt mit passendem `margin-left`.
+
 ## [0.2.6] – 2026-03-30
 
 ### Changed
@@ -51,6 +57,7 @@ Die **Versionsnummer** entspricht `version` in `hk_addon/config.yaml` (Quelle f�
 - Erstes Add-on-Gerüst: `hk_addon` mit Ingress, Node-Server, REST-Proxy zur HA-API (`SUPERVISOR_TOKEN`), Scheduler-Stub, Platzhalter-UI.
 - `repository.yaml`, Übersetzungen (`translations/`), `apparmor.txt`, Watchdog-URL, Doku für Installation über GitHub.
 
+[0.2.7]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.2.7
 [0.2.6]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.2.6
 [0.2.5]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.2.5
 [0.2.4]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.2.4

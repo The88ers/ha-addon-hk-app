@@ -2427,9 +2427,8 @@ class HKWebApp extends LitElement {
   static get styles() {
     return css`
       :host {
-        display: flex;
-        height: 100vh;
-        max-height: 100vh;
+        display: block;
+        min-height: 100vh;
         width: 100%;
         max-width: 100%;
         min-width: 0;
@@ -2444,10 +2443,10 @@ class HKWebApp extends LitElement {
         width: 100%;
         max-width: 100%;
         min-width: 0;
-        height: 100vh;
-        border-radius: 20px;
-        box-shadow: 0 8px 32px 0 var(--liq-shadow, rgba(31, 38, 135, 0.18));
-        overflow: hidden;
+        min-height: 100vh;
+        border-radius: 0 20px 20px 0;
+        box-shadow: none;
+        overflow: visible;
       }
       @media (max-width: 768px) {
         .container {
@@ -2455,21 +2454,28 @@ class HKWebApp extends LitElement {
         }
       }
       .sidebar {
-        width: 220px;
+        width: 180px;
         background: var(--liq-sidebar, rgba(255,255,255,0.18));
         backdrop-filter: blur(16px);
         -webkit-backdrop-filter: blur(16px);
-        border-radius: 20px 0 0 20px;
-        box-shadow: 0 4px 24px 0 var(--liq-shadow, rgba(31, 38, 135, 0.10));
+        border-radius: 0 0 16px 0;
+        box-shadow: none;
         display: flex;
         flex-direction: column;
-        padding: 16px 0 8px 0;
+        padding: 12px 0 8px 0;
         gap: 0;
         transition: width 0.3s ease;
-        position: relative;
+        position: fixed;
+        top: 0;
+        left: 0;
+        height: 100vh;
+        height: 100dvh;
+        padding-top: env(safe-area-inset-top, 0);
+        z-index: 1000;
+        box-sizing: border-box;
       }
       .sidebar.collapsed {
-        width: 70px;
+        width: 56px;
       }
       .sidebar-version {
         position: relative;
@@ -2504,15 +2510,9 @@ class HKWebApp extends LitElement {
       @media (max-width: 768px) {
         .sidebar {
           border-radius: 0;
-          position: fixed;
-          left: 0;
-          top: 0;
-          height: 100vh;
-          z-index: 1000;
-          box-shadow: 2px 0 12px rgba(0,0,0,0.15);
         }
         .sidebar.collapsed {
-          width: 60px;
+          width: 48px;
         }
         .sidebar-overlay {
           display: block;
@@ -2525,10 +2525,6 @@ class HKWebApp extends LitElement {
           z-index: 999;
           backdrop-filter: blur(4px);
           -webkit-backdrop-filter: blur(4px);
-        }
-        .content {
-          margin-left: 0;
-          width: 100%;
         }
       }
       .sidebar-toggle {
@@ -2560,9 +2556,9 @@ class HKWebApp extends LitElement {
       .sidebar .menu {
         display: flex;
         flex-direction: column;
-        gap: 4px;
-        margin-top: 48px;
-        padding: 0 8px;
+        gap: 2px;
+        margin-top: 44px;
+        padding: 0 6px;
       }
       .sidebar.collapsed .menu {
         padding: 0 4px;
@@ -2570,8 +2566,8 @@ class HKWebApp extends LitElement {
       .sidebar .menu-item {
         display: flex;
         align-items: center;
-        gap: 14px;
-        padding: 12px 16px;
+        gap: 10px;
+        padding: 10px 12px;
         border-radius: 12px;
         font-size: 1.1rem;
         font-weight: 500;
@@ -2591,8 +2587,8 @@ class HKWebApp extends LitElement {
         color: #007aff;
       }
       .sidebar .menu-item svg {
-        width: 22px;
-        height: 22px;
+        width: 20px;
+        height: 20px;
         opacity: 0.8;
         flex-shrink: 0;
       }
@@ -2603,31 +2599,31 @@ class HKWebApp extends LitElement {
         display: none;
       }
       .content {
-        flex: 1;
+        flex: 1 1 auto;
         min-width: 0;
         padding: 48px 32px;
         display: flex;
         flex-direction: column;
         background: transparent;
-        overflow-y: auto;
-        overflow-x: hidden;
+        overflow: visible;
         overscroll-behavior-x: none;
         touch-action: pan-y;
+        box-sizing: border-box;
+      }
+      .container.sidebar-strip-wide .content {
+        margin-left: 180px;
+      }
+      .container.sidebar-strip-narrow .content {
+        margin-left: 56px;
       }
       @media (max-width: 768px) {
-        /* Sidebar ist position:fixed → Inhalt ohne Einrückung liegt darunter */
         .container.sidebar-strip-narrow .content {
-          margin-left: 60px;
-          flex: 1;
-          min-width: 0;
-          box-sizing: border-box;
-          padding: 20px 14px 28px 14px;
+          margin-left: 48px;
         }
+        .container.sidebar-strip-narrow .content,
         .container.sidebar-strip-wide .content {
-          margin-left: 220px;
           flex: 1;
           min-width: 0;
-          box-sizing: border-box;
           padding: 20px 14px 28px 14px;
         }
       }
@@ -2700,7 +2696,7 @@ class HKWebApp extends LitElement {
       .glass-card {
         background: var(--liq-card, rgba(255,255,255,0.25));
         border-radius: 30px;
-        box-shadow: 0 12px 48px 0 var(--liq-shadow, rgba(31, 38, 135, 0.15));
+        box-shadow: none;
         backdrop-filter: blur(18px);
         -webkit-backdrop-filter: blur(18px);
         border: 1.5px solid rgba(255,255,255,0.22);
@@ -2710,7 +2706,6 @@ class HKWebApp extends LitElement {
         display: flex;
         flex-direction: column;
         align-items: center;
-        transition: box-shadow 0.3s;
       }
       @media (max-width: 768px) {
         .glass-card {
@@ -2719,9 +2714,7 @@ class HKWebApp extends LitElement {
           width: 100%;
           padding: 28px 20px;
           border: 2px solid rgba(255, 255, 255, 0.45);
-          box-shadow:
-            0 10px 36px var(--liq-shadow, rgba(31, 38, 135, 0.18)),
-            inset 0 1px 0 rgba(255, 255, 255, 0.45);
+          box-shadow: none;
         }
       }
       .glass-card--notizen {
@@ -2766,9 +2759,6 @@ class HKWebApp extends LitElement {
       .notizen-textarea:focus {
         border-color: #007aff;
         box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
-      }
-      .glass-card:hover {
-        box-shadow: 0 16px 56px 0 var(--liq-shadow, rgba(31, 38, 135, 0.20));
       }
       .klappen-card-content {
         width: 100%;
@@ -3367,8 +3357,7 @@ class HKWebApp extends LitElement {
         line-height: 1.35;
         white-space: pre-wrap;
         word-break: break-word;
-        max-height: min(60vh, 520px);
-        overflow: auto;
+        overflow: visible;
         background: rgba(0, 0, 0, 0.06);
         border-radius: 12px;
         font-family: ui-monospace, Consolas, 'Courier New', monospace;
@@ -3392,11 +3381,10 @@ class HKWebApp extends LitElement {
         padding: 12px;
         margin: 0;
         width: 100%;
-        max-height: 400px;
-        overflow-y: auto;
+        overflow: visible;
         background: rgba(255,255,255,0.25);
         border: 1.5px solid rgba(255,255,255,0.22);
-        box-shadow: 0 2px 8px rgba(31, 38, 135, 0.08);
+        box-shadow: none;
         border-radius: 16px;
         backdrop-filter: blur(8px);
         -webkit-backdrop-filter: blur(8px);
@@ -3493,7 +3481,7 @@ class HKWebApp extends LitElement {
         border-radius: 20px;
         backdrop-filter: blur(12px);
         -webkit-backdrop-filter: blur(12px);
-        box-shadow: 0 4px 16px rgba(31, 38, 135, 0.10);
+        box-shadow: none;
       }
       .settings-section {
         margin-bottom: 24px;
@@ -3888,7 +3876,7 @@ class HKWebApp extends LitElement {
       @media (max-width: 768px) {
         .setup-section {
           border: 2px solid rgba(255, 255, 255, 0.42);
-          box-shadow: 0 6px 22px rgba(31, 38, 135, 0.12);
+          box-shadow: none;
         }
       }
       .entity-input-row {
@@ -3964,10 +3952,12 @@ class HKWebApp extends LitElement {
         backdrop-filter: blur(8px);
         -webkit-backdrop-filter: blur(8px);
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         justify-content: center;
         z-index: 10000;
         padding: 20px;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
         animation: fadeIn 0.2s ease;
       }
       @keyframes fadeIn {
@@ -3977,13 +3967,14 @@ class HKWebApp extends LitElement {
       .entity-check-modal {
         background: var(--liq-card, rgba(255,255,255,0.95));
         border-radius: 24px;
-        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        box-shadow: none;
         backdrop-filter: blur(20px);
         -webkit-backdrop-filter: blur(20px);
         border: 1.5px solid rgba(255,255,255,0.3);
         max-width: 800px;
         width: 100%;
-        max-height: 90vh;
+        margin: 40px auto;
+        flex-shrink: 0;
         display: flex;
         flex-direction: column;
         animation: slideUp 0.3s ease;
@@ -4071,8 +4062,8 @@ class HKWebApp extends LitElement {
       }
       .check-results {
         padding: 32px;
-        overflow-y: auto;
-        flex: 1;
+        overflow: visible;
+        flex: 0 0 auto;
       }
       .check-summary {
         margin-bottom: 32px;
@@ -4319,7 +4310,7 @@ class HKWebApp extends LitElement {
       @media (max-width: 768px) {
         .entity-check-modal {
           max-width: 100%;
-          max-height: 100vh;
+          margin: 0;
           border-radius: 0;
         }
         .modal-header {
