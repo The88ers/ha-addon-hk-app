@@ -3,6 +3,12 @@
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/).  
 Die **Versionsnummer** entspricht `version` in `hk_addon/config.yaml` (Quelle für Home Assistant).
 
+## [0.2.6] – 2026-03-30
+
+### Changed
+- **Layout:** einheitliche Kartenbreite (`hk-tab-stack` / `hk-tab-card`) für Modi, Setup, Einstellungen, Log, Notizen; Sidebar-Version unter „Log“, Notizen-Reiter vor Log.
+- **Overflow:** kein horizontales Scrollen in der App (`:host`, `container` 100 % statt `100vw`); Touch `pan-y`; Modi-Auswahl, Tag/Nacht-Offsets und Sicherheitsschließzeiten bleiben in der Karte.
+
 ## [0.2.5] – 2026-03-30
 
 ### Added
@@ -45,6 +51,7 @@ Die **Versionsnummer** entspricht `version` in `hk_addon/config.yaml` (Quelle f�
 - Erstes Add-on-Gerüst: `hk_addon` mit Ingress, Node-Server, REST-Proxy zur HA-API (`SUPERVISOR_TOKEN`), Scheduler-Stub, Platzhalter-UI.
 - `repository.yaml`, Übersetzungen (`translations/`), `apparmor.txt`, Watchdog-URL, Doku für Installation über GitHub.
 
+[0.2.6]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.2.6
 [0.2.5]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.2.5
 [0.2.4]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.2.4
 [0.1.3]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.1.3

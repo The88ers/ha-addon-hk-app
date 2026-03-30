@@ -1469,15 +1469,14 @@ class HKWebApp extends LitElement {
     const tabs = [
       { id: 'klappen', label: 'Klappen', icon: this.icon('tabler:layout-grid') },
       { id: 'modi', label: 'Modi', icon: this.icon('tabler:calendar') },
-      { id: 'notizen', label: 'Notizen', icon: this.icon('tabler:notes') },
       { id: 'einstellungen', label: 'Einstellungen', icon: this.icon('tabler:settings') },
       { id: 'sicherheit', label: 'Sicherheit', icon: this.icon('tabler:shield-lock') },
       { id: 'setup', label: 'Setup', icon: this.icon('tabler:tools') },
+      { id: 'notizen', label: 'Notizen', icon: this.icon('tabler:notes') },
       { id: 'log', label: 'Log', icon: this.icon('tabler:menu-2') },
     ];
     return html`
       <div class="sidebar ${this.sidebarCollapsed ? 'collapsed' : ''}">
-        <div class="sidebar-version">v${HKWebApp.getDisplayVersion()}</div>
         <button class="sidebar-toggle" @click=${() => this.toggleSidebar()} title="${this.sidebarCollapsed ? 'Sidebar erweitern' : 'Sidebar reduzieren'}">
           ${this.sidebarCollapsed 
             ? html`<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>`
@@ -1505,6 +1504,7 @@ class HKWebApp extends LitElement {
             `
           )}
         </div>
+        <div class="sidebar-version" title="Add-on- / App-Version">v${HKWebApp.getDisplayVersion()}</div>
       </div>
     `;
   }
@@ -1804,64 +1804,69 @@ class HKWebApp extends LitElement {
 
   renderEinstellungen() {
     return html`
-      <div class="settings-card">
-        <div class="settings-title">Design Modus</div>
-        <div class="theme-toggle-group">
-          <button
-            class="theme-toggle-btn ${this.theme === 'light' ? 'active' : ''}"
-            @click=${() => this.setTheme('light')}
-          >Light Mode</button>
-          <button
-            class="theme-toggle-btn ${this.theme === 'dark' ? 'active' : ''}"
-            @click=${() => this.setTheme('dark')}
-          >Dark Mode</button>
-        </div>
-        <div class="slider-group">
-          <div class="slider-label">Kachel-Transparenz</div>
-          <div class="slider-row">
-            <input type="range" min="0.05" max="0.95" step="0.01" .value=${this.cardAlpha} @input=${this.setCardAlpha}>
-            <span class="slider-value">${Math.round(this.cardAlpha * 100)}%</span>
-          </div>
-          <div class="slider-label">Sidebar-Transparenz</div>
-          <div class="slider-row">
-            <input type="range" min="0.05" max="0.95" step="0.01" .value=${this.sidebarAlpha} @input=${this.setSidebarAlpha}>
-            <span class="slider-value">${Math.round(this.sidebarAlpha * 100)}%</span>
-          </div>
-        </div>
-        <div style="margin-top:16px;padding:12px;background:rgba(255,255,255,0.25);border:1.5px solid rgba(255,255,255,0.22);font-size:0.85rem;color:var(--liq-text, #2a2e3a);opacity:0.8;border-radius:12px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">
-          Passe die Transparenz der Kacheln und der Sidebar an.<br>
-          Wähle zwischen hellem und dunklem Design.
-        </div>
-
-        <div class="settings-title" style="margin-top:24px">Einstellungen sichern</div>
-        <div class="settings-card" style="margin-top:8px">
-          <p class="einstellungen-sync-hint">
-            <strong>Home-Assistant-Add-on:</strong> Änderungen werden automatisch nach
-            <code class="inline-code">/data/hkweb-settings.json</code> auf dem HA-Gerät geschrieben und beim nächsten
-            Start wieder geladen (Backup ohne manuellen Export).<br /><br />
-            <strong>Optional (klassische Web-App):</strong> <code class="inline-code">hkweb-autosave.json</code> aus
-            <code class="inline-code">www/hkweb/</code> wird nur geladen, wenn noch keine Add-on-Daten vorliegen —
-            <strong>Export</strong>/<strong>Import</strong> für Datei-Backup und Umzug.
-          </p>
-          <div class="entity-input-row" style="margin-top:12px;flex-wrap:wrap;gap:8px">
-            <button type="button" class="glass-btn schedule-sync-btn" @click=${() => this.exportSettingsToFile()}>
-              Export: hkweb-autosave.json
-            </button>
+      <div class="content-header">
+        <h1>Einstellungen</h1>
+      </div>
+      <div class="hk-tab-stack">
+        <div class="glass-card hk-tab-card einstellungen-card">
+          <div class="settings-title">Design Modus</div>
+          <div class="theme-toggle-group">
             <button
-              type="button"
-              class="glass-btn schedule-sync-btn"
-              style="opacity:0.95"
-              @click=${() => this._openAutosaveImportPicker()}
-            >
-              Import aus Datei…
-            </button>
-            <input
-              id="hkweb-autosave-file"
-              type="file"
-              accept="application/json,.json"
-              style="display:none"
-              @change=${(e) => this.importSettingsFromFile(e)}
-            />
+              class="theme-toggle-btn ${this.theme === 'light' ? 'active' : ''}"
+              @click=${() => this.setTheme('light')}
+            >Light Mode</button>
+            <button
+              class="theme-toggle-btn ${this.theme === 'dark' ? 'active' : ''}"
+              @click=${() => this.setTheme('dark')}
+            >Dark Mode</button>
+          </div>
+          <div class="slider-group">
+            <div class="slider-label">Kachel-Transparenz</div>
+            <div class="slider-row">
+              <input type="range" min="0.05" max="0.95" step="0.01" .value=${this.cardAlpha} @input=${this.setCardAlpha}>
+              <span class="slider-value">${Math.round(this.cardAlpha * 100)}%</span>
+            </div>
+            <div class="slider-label">Sidebar-Transparenz</div>
+            <div class="slider-row">
+              <input type="range" min="0.05" max="0.95" step="0.01" .value=${this.sidebarAlpha} @input=${this.setSidebarAlpha}>
+              <span class="slider-value">${Math.round(this.sidebarAlpha * 100)}%</span>
+            </div>
+          </div>
+          <div class="einstellungen-hint-box">
+            Passe die Transparenz der Kacheln und der Sidebar an.<br />
+            Wähle zwischen hellem und dunklem Design.
+          </div>
+
+          <div class="settings-title" style="margin-top:24px">Einstellungen sichern</div>
+          <div class="einstellungen-sync-panel">
+            <p class="einstellungen-sync-hint">
+              <strong>Home-Assistant-Add-on:</strong> Änderungen werden automatisch nach
+              <code class="inline-code">/data/hkweb-settings.json</code> auf dem HA-Gerät geschrieben und beim nächsten
+              Start wieder geladen (Backup ohne manuellen Export).<br /><br />
+              <strong>Optional (klassische Web-App):</strong> <code class="inline-code">hkweb-autosave.json</code> aus
+              <code class="inline-code">www/hkweb/</code> wird nur geladen, wenn noch keine Add-on-Daten vorliegen —
+              <strong>Export</strong>/<strong>Import</strong> für Datei-Backup und Umzug.
+            </p>
+            <div class="entity-input-row" style="margin-top:12px;flex-wrap:wrap;gap:8px">
+              <button type="button" class="glass-btn schedule-sync-btn" @click=${() => this.exportSettingsToFile()}>
+                Export: hkweb-autosave.json
+              </button>
+              <button
+                type="button"
+                class="glass-btn schedule-sync-btn"
+                style="opacity:0.95"
+                @click=${() => this._openAutosaveImportPicker()}
+              >
+                Import aus Datei…
+              </button>
+              <input
+                id="hkweb-autosave-file"
+                type="file"
+                accept="application/json,.json"
+                style="display:none"
+                @change=${(e) => this.importSettingsFromFile(e)}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -1876,13 +1881,13 @@ class HKWebApp extends LitElement {
       <div class="content-header">
         <h1>Modi</h1>
       </div>
-      <div class="modi-klappen-container">
+      <div class="hk-tab-stack">
         ${klappen.map((k) => {
           const modusData = this.getKlappenModus(k.id);
           const currentModus = modusData.modus || 'manual';
           
           return html`
-            <div class="glass-card modi-klappe-card">
+            <div class="glass-card hk-tab-card modi-klappe-card">
               <div class="modi-klappe-header">
                 <h2 class="modi-klappe-name">${k.name}</h2>
                 <select 
@@ -2169,11 +2174,11 @@ class HKWebApp extends LitElement {
           </button>
         </div>
       </div>
-      <div class="setup-container">
+      <div class="hk-tab-stack setup-container">
         ${klappen.map((k) => {
           const validation = this.entityValidation[k.id] || {};
           return html`
-            <div class="glass-card setup-klappe-card">
+            <div class="glass-card hk-tab-card setup-klappe-card">
               <div class="setup-klappe-header">
                 <input 
                   type="text" 
@@ -2284,26 +2289,29 @@ class HKWebApp extends LitElement {
     if (!showAddonLog) {
       return html`
         <div class="content-header"><h1>Log</h1></div>
-        <div class="glass-card log-card">
-          <h2>Letzte Änderungen in der App</h2>
-          <ul class="log-list">
-            ${this.logEntries.length === 0
-              ? html`<li class="log-empty">Noch keine Änderungen protokolliert.</li>`
-              : this.logEntries.map(
-                  (e) => html`
-                    <li class="log-entry">
-                      <span class="log-time">[${e.ts}]</span> ${e.msg}
-                    </li>
-                  `,
-                )}
-          </ul>
+        <div class="hk-tab-stack">
+          <div class="glass-card hk-tab-card log-card">
+            <h2>Letzte Änderungen in der App</h2>
+            <ul class="log-list">
+              ${this.logEntries.length === 0
+                ? html`<li class="log-empty">Noch keine Änderungen protokolliert.</li>`
+                : this.logEntries.map(
+                    (e) => html`
+                      <li class="log-entry">
+                        <span class="log-time">[${e.ts}]</span> ${e.msg}
+                      </li>
+                    `,
+                  )}
+            </ul>
+          </div>
         </div>
       `;
     }
     const isAddon = this.logPanelTab === 'addon';
     return html`
       <div class="content-header"><h1>Log</h1></div>
-      <div class="log-subtabs glass-card">
+      <div class="hk-tab-stack">
+      <div class="log-subtabs glass-card hk-tab-card">
         <button
           type="button"
           class="log-subtab ${!isAddon ? 'active' : ''}"
@@ -2334,7 +2342,7 @@ class HKWebApp extends LitElement {
       </div>
       ${!isAddon
         ? html`
-            <div class="glass-card log-card">
+            <div class="glass-card hk-tab-card log-card">
               <h2>Letzte Änderungen in der App</h2>
               <p class="log-panel-hint">Einträge aus Bedienung und Einstellungen (lokal im Browser).</p>
               <ul class="log-list">
@@ -2351,7 +2359,7 @@ class HKWebApp extends LitElement {
             </div>
           `
         : html`
-            <div class="glass-card log-card log-card-addon">
+            <div class="glass-card hk-tab-card log-card log-card-addon">
               <h2>Add-on-Server (Node)</h2>
               <p class="log-panel-hint">
                 Ausgaben des Add-on-Prozesses (REST-Proxy, Speichern nach /data, Fehler). Zum Teilen mit Support
@@ -2360,6 +2368,7 @@ class HKWebApp extends LitElement {
               <pre class="log-addon-pre">${(this.addonLogLines || []).join('\n')}</pre>
             </div>
           `}
+      </div>
     `;
   }
 
@@ -2368,7 +2377,8 @@ class HKWebApp extends LitElement {
       <div class="content-header">
         <h1>Notizen</h1>
       </div>
-      <div class="glass-card glass-card--notizen">
+      <div class="hk-tab-stack">
+        <div class="glass-card hk-tab-card glass-card--notizen">
         <p class="notizen-hint">
           Text wird lokal im Browser gehalten und im <strong>Home-Assistant-Add-on</strong> zusätzlich mit den
           Einstellungen unter <code>/data/hkweb-settings.json</code> gesichert.
@@ -2381,6 +2391,7 @@ class HKWebApp extends LitElement {
           spellcheck="true"
           rows="16"
         ></textarea>
+        </div>
       </div>
     `;
   }
@@ -2404,10 +2415,10 @@ class HKWebApp extends LitElement {
           <div class="content-header">
             <h1>${this.activeTab.charAt(0).toUpperCase() + this.activeTab.slice(1)}</h1>
           </div>
-          <div class="glass-card">
-            <p style="color: var(--liq-text, #2a2e3a); opacity: 0.7;">
-              Inhalt folgt...
-            </p>
+          <div class="hk-tab-stack">
+            <div class="glass-card hk-tab-card">
+              <p class="tab-placeholder-msg">Inhalt folgt…</p>
+            </div>
           </div>
         `;
     }
@@ -2418,6 +2429,11 @@ class HKWebApp extends LitElement {
       :host {
         display: flex;
         height: 100vh;
+        max-height: 100vh;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        overflow-x: hidden;
         font-family: 'SF Pro Display', 'Roboto', Arial, sans-serif;
         background: var(--liq-bg, linear-gradient(135deg, #e3e9f3 0%, #cfd8e6 100%));
         color: var(--liq-text, #2a2e3a);
@@ -2425,7 +2441,9 @@ class HKWebApp extends LitElement {
       }
       .container {
         display: flex;
-        width: 100vw;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
         height: 100vh;
         border-radius: 20px;
         box-shadow: 0 8px 32px 0 var(--liq-shadow, rgba(31, 38, 135, 0.18));
@@ -2445,8 +2463,8 @@ class HKWebApp extends LitElement {
         box-shadow: 0 4px 24px 0 var(--liq-shadow, rgba(31, 38, 135, 0.10));
         display: flex;
         flex-direction: column;
-        padding: 16px 0 0 0;
-        gap: 8px;
+        padding: 16px 0 8px 0;
+        gap: 0;
         transition: width 0.3s ease;
         position: relative;
       }
@@ -2454,28 +2472,31 @@ class HKWebApp extends LitElement {
         width: 70px;
       }
       .sidebar-version {
-        position: absolute;
-        top: 12px;
-        left: 12px;
-        font-size: 0.7rem;
+        position: relative;
+        flex-shrink: 0;
+        margin: 10px 8px 14px 8px;
+        padding: 6px 8px;
+        font-size: 0.68rem;
         font-weight: 600;
         color: var(--liq-text, #3a4252);
-        opacity: 0.6;
-        z-index: 5;
-        padding: 4px 8px;
-        background: rgba(255,255,255,0.2);
-        border-radius: 6px;
+        opacity: 0.65;
+        text-align: center;
+        line-height: 1.25;
+        word-break: break-all;
+        background: rgba(255, 255, 255, 0.2);
+        border-radius: 8px;
         backdrop-filter: blur(4px);
         -webkit-backdrop-filter: blur(4px);
         transition: opacity 0.2s;
+        align-self: stretch;
       }
       .sidebar-version:hover {
         opacity: 0.9;
       }
       .sidebar.collapsed .sidebar-version {
-        font-size: 0.6rem;
-        padding: 3px 6px;
-        left: 8px;
+        font-size: 0.58rem;
+        padding: 5px 4px;
+        margin: 8px 4px 12px 4px;
       }
       .sidebar-overlay {
         display: none;
@@ -2583,11 +2604,15 @@ class HKWebApp extends LitElement {
       }
       .content {
         flex: 1;
+        min-width: 0;
         padding: 48px 32px;
         display: flex;
         flex-direction: column;
         background: transparent;
         overflow-y: auto;
+        overflow-x: hidden;
+        overscroll-behavior-x: none;
+        touch-action: pan-y;
       }
       @media (max-width: 768px) {
         /* Sidebar ist position:fixed → Inhalt ohne Einrückung liegt darunter */
@@ -2652,6 +2677,26 @@ class HKWebApp extends LitElement {
           align-items: stretch;
         }
       }
+      /* Karten in Reiter-Stapeln (Modi, Setup, …): volle Breite wie Modi */
+      .hk-tab-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+        margin-top: 24px;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+        overflow-x: hidden;
+      }
+      .glass-card.hk-tab-card {
+        min-width: 0;
+        width: 100%;
+        max-width: 100%;
+        align-items: flex-start;
+        box-sizing: border-box;
+        overflow-x: hidden;
+      }
       .glass-card {
         background: var(--liq-card, rgba(255,255,255,0.25));
         border-radius: 30px;
@@ -2680,7 +2725,7 @@ class HKWebApp extends LitElement {
         }
       }
       .glass-card--notizen {
-        max-width: min(720px, 100%);
+        max-width: 100%;
         width: 100%;
         align-self: stretch;
         align-items: stretch;
@@ -3179,20 +3224,37 @@ class HKWebApp extends LitElement {
         opacity: 0.5;
         cursor: pointer;
       }
-      .settings-card {
-        background: var(--liq-card, rgba(255,255,255,0.25));
-        border-radius: 24px;
-        box-shadow: 0 8px 32px 0 var(--liq-shadow, rgba(31, 38, 135, 0.12));
-        padding: 36px 32px;
-        min-width: 320px;
-        max-width: 400px;
-        margin-top: 32px;
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        backdrop-filter: blur(18px);
-        -webkit-backdrop-filter: blur(18px);
-        border: 1.5px solid rgba(255,255,255,0.22);
+      .einstellungen-card {
+        width: 100%;
+      }
+      .einstellungen-hint-box {
+        margin-top: 16px;
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.25);
+        border: 1.5px solid rgba(255, 255, 255, 0.22);
+        font-size: 0.85rem;
+        color: var(--liq-text, #2a2e3a);
+        opacity: 0.8;
+        border-radius: 12px;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        line-height: 1.45;
+      }
+      .einstellungen-sync-panel {
+        margin-top: 8px;
+        padding: 16px;
+        background: rgba(255, 255, 255, 0.2);
+        border: 1.5px solid rgba(255, 255, 255, 0.22);
+        border-radius: 14px;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .tab-placeholder-msg {
+        margin: 0;
+        color: var(--liq-text, #2a2e3a);
+        opacity: 0.72;
+        font-size: 1rem;
+        line-height: 1.5;
       }
       .settings-title {
         font-size: 1.3rem;
@@ -3262,9 +3324,10 @@ class HKWebApp extends LitElement {
         align-items: center;
         gap: 8px;
         padding: 12px 16px;
-        margin-bottom: 12px;
-        max-width: 900px;
+        margin-bottom: 0;
         width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
       }
       .log-subtab {
         padding: 8px 16px;
@@ -3312,10 +3375,10 @@ class HKWebApp extends LitElement {
         color: var(--liq-text, #2a2e3a);
       }
       .log-card-addon {
-        max-width: 900px;
+        max-width: 100%;
       }
       .log-card {
-        max-width: 900px;
+        max-width: 100%;
         width: 100%;
         align-items: flex-start;
       }
@@ -3369,27 +3432,18 @@ class HKWebApp extends LitElement {
         opacity: 0.88;
         line-height: 1.45;
       }
-      .modi-klappen-container {
-        display: flex;
-        flex-direction: column;
-        gap: 24px;
-        margin-top: 24px;
-        width: 100%;
-        max-width: 100%;
-      }
       .modi-klappe-card {
-        width: 100%;
-        max-width: 100%;
-        min-width: 100%;
         align-items: flex-start;
-        box-sizing: border-box;
       }
       .modi-klappe-header {
         width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
         justify-content: space-between;
-        gap: 24px;
+        gap: 12px 16px;
         margin-bottom: 20px;
         padding-bottom: 16px;
         border-bottom: 1px solid rgba(0,0,0,0.1);
@@ -3399,11 +3453,15 @@ class HKWebApp extends LitElement {
         font-weight: 700;
         color: var(--liq-text, #2a2e3a);
         margin: 0;
+        min-width: 0;
+        flex: 1 1 160px;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
       .modus-select {
-        font-size: 1.1rem;
+        font-size: 1.05rem;
         font-weight: 600;
-        padding: 10px 16px;
+        padding: 10px 12px;
         border: 1.5px solid rgba(255,255,255,0.3);
         background: rgba(255,255,255,0.35);
         color: var(--liq-text, #2a2e3a);
@@ -3412,7 +3470,10 @@ class HKWebApp extends LitElement {
         transition: all 0.2s;
         border-radius: 12px;
         cursor: pointer;
-        min-width: 180px;
+        flex: 1 1 200px;
+        min-width: 0;
+        max-width: 100%;
+        box-sizing: border-box;
         backdrop-filter: blur(8px);
         -webkit-backdrop-filter: blur(8px);
       }
@@ -3422,8 +3483,11 @@ class HKWebApp extends LitElement {
       }
       .modus-settings-expanded {
         width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
         margin-top: 20px;
-        padding: 20px;
+        padding: 16px;
+        overflow-x: hidden;
         background: rgba(255,255,255,0.25);
         border: 1.5px solid rgba(255,255,255,0.22);
         border-radius: 20px;
@@ -3433,6 +3497,8 @@ class HKWebApp extends LitElement {
       }
       .settings-section {
         margin-bottom: 24px;
+        min-width: 0;
+        max-width: 100%;
       }
       .settings-section:last-child {
         margin-bottom: 0;
@@ -3447,9 +3513,12 @@ class HKWebApp extends LitElement {
       }
       .setting-row {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
         gap: 12px;
         margin-bottom: 12px;
+        min-width: 0;
+        max-width: 100%;
       }
       .setting-label {
         font-size: 0.95rem;
@@ -3507,8 +3576,11 @@ class HKWebApp extends LitElement {
       }
       .time-schedule-item {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
         gap: 12px;
+        min-width: 0;
+        max-width: 100%;
       }
       .time-schedule-item input[type="time"] {
         font-size: 1rem;
@@ -3600,15 +3672,20 @@ class HKWebApp extends LitElement {
       }
       .offset-row {
         display: flex;
-        align-items: center;
-        gap: 16px;
+        align-items: flex-start;
+        gap: 10px 12px;
         flex-wrap: wrap;
+        min-width: 0;
+        max-width: 100%;
       }
       .offset-label {
         font-size: 0.95rem;
         font-weight: 600;
         color: var(--liq-text, #2a2e3a);
-        min-width: 250px;
+        flex: 1 1 100%;
+        min-width: 0;
+        max-width: 100%;
+        line-height: 1.35;
       }
       .offset-select {
         font-size: 0.95rem;
@@ -3620,7 +3697,10 @@ class HKWebApp extends LitElement {
         box-shadow: 0 2px 8px rgba(31, 38, 135, 0.08);
         border-radius: 12px;
         cursor: pointer;
-        min-width: 180px;
+        flex: 1 1 200px;
+        min-width: 0;
+        max-width: 100%;
+        box-sizing: border-box;
         backdrop-filter: blur(8px);
         -webkit-backdrop-filter: blur(8px);
       }
@@ -3629,16 +3709,20 @@ class HKWebApp extends LitElement {
         box-shadow: 0 4px 12px rgba(0,122,255,0.15);
       }
       .calculated-time {
-        font-size: 0.95rem;
+        font-size: 0.9rem;
         font-weight: 700;
         color: #007aff;
-        padding: 6px 12px;
+        padding: 6px 10px;
         background: rgba(0,122,255,0.1);
         border-radius: 12px;
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow-wrap: anywhere;
       }
       .checkbox-label-large {
         display: flex;
-        align-items: center;
+        flex-wrap: wrap;
+        align-items: flex-start;
         gap: 12px;
         font-size: 1rem;
         font-weight: 600;
@@ -3647,6 +3731,8 @@ class HKWebApp extends LitElement {
         padding: 12px;
         border-radius: 12px;
         transition: all 0.2s;
+        max-width: 100%;
+        box-sizing: border-box;
       }
       .checkbox-label-large:hover {
         background: rgba(0,0,0,0.05);
@@ -3659,12 +3745,19 @@ class HKWebApp extends LitElement {
       }
       .checkbox-label-large span {
         user-select: none;
+        flex: 1 1 180px;
+        min-width: 0;
+        overflow-wrap: anywhere;
+        line-height: 1.4;
       }
       .info-text {
         font-size: 0.85rem;
         color: var(--liq-text, #2a2e3a);
         opacity: 0.7;
         font-style: italic;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        word-break: break-word;
         margin-top: 8px;
         padding-left: 36px;
       }
@@ -3690,15 +3783,9 @@ class HKWebApp extends LitElement {
         margin-top: 10px;
       }
       .setup-container {
-        display: flex;
-        flex-direction: column;
-        gap: 24px;
-        margin-top: 24px;
-        width: 100%;
+        margin-top: 0;
       }
       .setup-klappe-card {
-        width: 100%;
-        max-width: 100%;
         align-items: flex-start;
       }
       .setup-klappe-header {
