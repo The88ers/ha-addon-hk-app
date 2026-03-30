@@ -3,6 +3,12 @@
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/).  
 Die **Versionsnummer** entspricht `version` in `hk_addon/config.yaml` (Quelle für Home Assistant).
 
+## [0.1.3] – 2026-03-30
+
+### Fixed
+- **Ingress 502 Bad Gateway:** HTTP-Server nicht mehr nur auf IPv4 (`0.0.0.0`) binden – im Docker-Netz kann der Zugriff über IPv6 erfolgen; dann war nichts erreichbar.
+- s6-`run`-Skript: `#!/command/with-contenv sh` + `exec node` (ohne `bashio`-Shebang für eine reine Exec-Zeile).
+
 ## [0.1.2] – 2026-03-30
 
 ### Fixed
@@ -21,6 +27,7 @@ Die **Versionsnummer** entspricht `version` in `hk_addon/config.yaml` (Quelle f�
 - Erstes Add-on-Gerüst: `hk_addon` mit Ingress, Node-Server, REST-Proxy zur HA-API (`SUPERVISOR_TOKEN`), Scheduler-Stub, Platzhalter-UI.
 - `repository.yaml`, Übersetzungen (`translations/`), `apparmor.txt`, Watchdog-URL, Doku für Installation über GitHub.
 
+[0.1.3]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.1.3
 [0.1.2]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.1.2
 [0.1.1]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.1.1
 [0.1.0]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.1.0

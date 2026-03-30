@@ -6,7 +6,12 @@ import { startScheduler } from './scheduler.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const PORT = Number(process.env.INGRESS_PORT || 8099);
+// Ingress: auf HA/Docker oft IPv6 – nur 0.0.0.0 binden blockiert ::-Verbindungen → 502 Bad Gateway
+const rawPort = process.env.INGRESS_PORT;
+const PORT =
+  rawPort != null && rawPort !== '' && Number(rawPort) > 0
+    ? Number(rawPort)
+    : 8099;
 const SUPERVISOR_TOKEN = process.env.SUPERVISOR_TOKEN;
 const HA_API = 'http://supervisor/core/api';
 
@@ -73,7 +78,7 @@ app.post('/api/ha/services/:domain/:service', async (req, res) => {
 
 const server = http.createServer(app);
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`HK Addon listening on ${PORT}`);
+server.listen(PORT, () => {
+  console.log(`HK Addon listening on ${PORT} (all interfaces, IPv4/IPv6 per Node defaults)`);
   startScheduler(console.log);
 });
