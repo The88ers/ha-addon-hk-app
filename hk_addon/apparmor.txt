@@ -45,6 +45,8 @@ profile hk_addon flags=(attach_disconnected,mediate_deleted) {
     /bin/bash rix,
     /etc/passwd r,
     /etc/resolv.conf r,
+    # Node/OpenSSL 3 lädt openssl.cnf beim Start (TLS/crypto); ohne Regel: Permission denied → kein HTTP-Server → 502
+    /etc/ssl/openssl.cnf r,
     /proc/** r,
     /dev/tty rw,
 
