@@ -25,7 +25,15 @@ if (typeof window !== 'undefined' && !window.__hkwebBfCacheBound) {
 // --- HK WEB App (Fallout Theme) ---
 class HKWebApp extends LitElement {
   static VERSION = '2.1.17';
-  
+
+  /** Sidebar: im Add-on = Git/config (window.__HK_ADDON_VERSION__), sonst App-Bundle-Version. */
+  static getDisplayVersion() {
+    if (typeof window !== 'undefined' && window.__HK_ADDON_VERSION__) {
+      return String(window.__HK_ADDON_VERSION__);
+    }
+    return HKWebApp.VERSION;
+  }
+
   static get properties() {
     return {
       hass: { type: Object },
@@ -60,9 +68,6 @@ class HKWebApp extends LitElement {
     this._lastStatesSnapshot = '';
     /** Kurzzeit-Anzeige-Override nach Slider-Bedienung, bis HA den gleichen Wert meldet. */
     this._speedUiOverride = {};
-    this._scheduleSyncAllTimer = null;
-    /** Eine input_text-Entity in HA: alle Klappen-Zeitpläne als ein JSON (localStorage-Key unten). */
-    this.scheduleSyncInputTextEntity = localStorage.getItem('hkweb_schedule_sync_input_text') || '';
     this.plz = localStorage.getItem('hkweb_plz') || '';
     this.sunriseTime = '';
     this.sunsetTime = '';
@@ -135,7 +140,6 @@ class HKWebApp extends LitElement {
     this.theme = localStorage.getItem('liqglass_theme') || 'light';
     this.cardAlpha = Number(localStorage.getItem('liqglass_cardAlpha')) || 0.25;
     this.sidebarAlpha = Number(localStorage.getItem('liqglass_sidebarAlpha')) || 0.18;
-    this.scheduleSyncInputTextEntity = localStorage.getItem('hkweb_schedule_sync_input_text') || '';
     this.plz = localStorage.getItem('hkweb_plz') || '';
     const isMobile = window.matchMedia('(max-width: 768px)').matches;
     this.sidebarCollapsed =
@@ -264,45 +268,6 @@ class HKWebApp extends LitElement {
     this.requestUpdate();
   }
   
-  goBackToHA() {
-    // Home-Assistant-Add-on (Ingress): gleiche Origin wie HA → Startseite
-    if (typeof window !== 'undefined' && window.__HK_ADDON__) {
-      try {
-        window.location.href = '/';
-        return;
-      } catch (e) {
-        console.error('HK Add-on: Navigation zur HA-Startseite fehlgeschlagen:', e);
-      }
-    }
-    // Versuche zurück zur Home Assistant Übersicht zu navigieren
-    try {
-      // Methode 1: Browser-Historie zurück
-      if (window.history.length > 1) {
-        window.history.back();
-        return;
-      }
-    } catch (e) {
-      console.log('History.back() nicht verfügbar:', e);
-    }
-
-    // Methode 2: Navigiere zur HA-Hauptseite basierend auf aktuellem Pfad
-    try {
-      const currentPath = window.location.pathname;
-      if (currentPath.includes('/hkweb-app')) {
-        // Entferne /hkweb-app vom Pfad
-        const basePath = currentPath.split('/hkweb-app')[0];
-        window.location.href = basePath || '/';
-      } else {
-        // Fallback: Zur Root-Seite
-        window.location.href = '/';
-      }
-    } catch (e) {
-      console.error('Fehler beim Navigieren:', e);
-      // Letzter Fallback: Reload
-      window.location.reload();
-    }
-  }
-
   _entityKeysForSnapshot() {
     return [
       'statusEntity', 'zustandEntity', 'lastActionEntity',
@@ -777,7 +742,6 @@ class HKWebApp extends LitElement {
 
   saveModi() {
     localStorage.setItem('hkweb_klappen_modi', JSON.stringify(this.klappenModi));
-    this._queuePushAllScheduleSyncs();
   }
 
   getKlappenModus(klappeId) {
@@ -1027,185 +991,6 @@ class HKWebApp extends LitElement {
     });
   }
 
-  _queuePushAllScheduleSyncs() {
-    if (!this.hass?.callService) return;
-    clearTimeout(this._scheduleSyncAllTimer);
-    this._scheduleSyncAllTimer = setTimeout(() => {
-      this.pushAllScheduleSyncsToHA();
-    }, 600);
-  }
-
-  getScheduleSyncInputTextEntity() {
-    return localStorage.getItem('hkweb_schedule_sync_input_text') || '';
-  }
-
-  setScheduleSyncInputTextEntity(value) {
-    const v = String(value || '').trim();
-    localStorage.setItem('hkweb_schedule_sync_input_text', v);
-    this.scheduleSyncInputTextEntity = v;
-    this._queuePushAllScheduleSyncs();
-    this.requestUpdate();
-  }
-
-  _scheduleSyncInputClass() {
-    const id = (this.scheduleSyncInputTextEntity || '').trim();
-    if (!id || !this.hass?.states) return '';
-    return this.checkEntityExists(id) ? 'entity-valid' : 'entity-invalid';
-  }
-
-  /** Eine Klappe: Modus, Zeiten, Button-IDs (Teil des Gesamt-JSON). */
-  buildScheduleSyncPayloadForKlappe(klappeId) {
-    const k = this.getKlappenConfig().find((x) => x.id === klappeId);
-    if (!k) return null;
-    const mod = this.getKlappenModus(klappeId);
-    const modus = mod.modus || 'manual';
-    const normalize = (arr) =>
-      (arr || [])
-        .map((z) => (z != null ? String(z).trim().slice(0, 5) : ''))
-        .filter((z) => z !== '');
-    return {
-      modus,
-      oeffnenZeiten: modus === 'schedule' ? normalize(mod.schedule?.oeffnenZeiten) : [],
-      schliessenZeiten: modus === 'schedule' ? normalize(mod.schedule?.schliessenZeiten) : [],
-      buttonOeffnen: k.buttonOeffnen || '',
-      buttonSchliessen: k.buttonSchliessen || '',
-    };
-  }
-
-  /** Ein JSON für genau eine input_text in HA: alle Klappen unter „k“ (lesbar, für Debug). */
-  buildMergedScheduleSyncPayload() {
-    const klappen = this.getKlappenConfig();
-    const kObj = {};
-    for (const k of klappen) {
-      kObj[k.id] = this.buildScheduleSyncPayloadForKlappe(k.id);
-    }
-    return { v: 1, k: kObj };
-  }
-
-  /**
-   * Kompaktes JSON (v2) für eine input_text: HA-Zustand max. 255 Zeichen.
-   * Schlüssel: m=s|d|n (Modus), o/c Zeiten, b/d Button-IDs (v1-Namen in der Automatisierung per Fallback).
-   */
-  buildMergedScheduleSyncPayloadCompact() {
-    const klappen = this.getKlappenConfig();
-    const modusCode = (modus) =>
-      ({ schedule: 's', daynight: 'd', manual: 'n' }[modus] || 'n');
-    const kObj = {};
-    for (const k of klappen) {
-      const full = this.buildScheduleSyncPayloadForKlappe(k.id);
-      if (!full) continue;
-      const row = { m: modusCode(full.modus) };
-      const bo = full.buttonOeffnen || '';
-      const bs = full.buttonSchliessen || '';
-      if (bo) row.b = bo;
-      if (bs) row.d = bs;
-      if (full.modus === 'schedule') {
-        row.o = full.oeffnenZeiten || [];
-        row.c = full.schliessenZeiten || [];
-      }
-      kObj[k.id] = row;
-    }
-    return { v: 2, k: kObj };
-  }
-
-  _normalizeJsonForCompare(str) {
-    if (str == null || str === '') return '';
-    try {
-      return JSON.stringify(JSON.parse(String(str)));
-    } catch {
-      return String(str).trim();
-    }
-  }
-
-  /**
-   * Liest hass.states nach dem Schreiben und vergleicht mit dem Gesendeten.
-   * Mehrere Versuche wegen WebSocket-Verzögerung.
-   */
-  _verifyScheduleSyncReadBack(entityId, expectedJson, attempt = 0) {
-    const maxAttempts = 10;
-    const delayMs = 450;
-    if (!entityId || !this.hass?.states) {
-      if (attempt < maxAttempts) {
-        setTimeout(() => this._verifyScheduleSyncReadBack(entityId, expectedJson, attempt + 1), delayMs);
-      } else {
-        this.addLogEntry('Zeitplan-Sync Prüfung: hass.states nicht verfügbar.');
-      }
-      return;
-    }
-    const actual = this.hass.states[entityId]?.state;
-    const expNorm = this._normalizeJsonForCompare(expectedJson);
-    if (actual === undefined || actual === 'unknown' || actual === 'unavailable') {
-      if (attempt < maxAttempts) {
-        setTimeout(() => this._verifyScheduleSyncReadBack(entityId, expectedJson, attempt + 1), delayMs);
-        return;
-      }
-      this.addLogEntry(
-        `Zeitplan-Sync Prüfung: „${entityId}“ bleibt „${actual ?? '—'}“ – Schreiben fehlgeschlagen, JSON zu lang (>255), oder keine Rechte.`,
-      );
-      return;
-    }
-    const actNorm = this._normalizeJsonForCompare(actual);
-    if (actNorm === expNorm) {
-      this.addLogEntry(`✓ Zeitplan-Sync bestätigt: HA-Zustand entspricht dem Gesendeten (${expectedJson.length} Zeichen).`);
-      return;
-    }
-    if (attempt < maxAttempts) {
-      setTimeout(() => this._verifyScheduleSyncReadBack(entityId, expectedJson, attempt + 1), delayMs);
-      return;
-    }
-    this.addLogEntry(
-      `Zeitplan-Sync Prüfung: Abweichung (HA ${actual.length} Zeichen, gesendet ${expectedJson.length}). Anfang in HA: ${String(actual).slice(0, 100)}`,
-    );
-  }
-
-  async pushAllScheduleSyncsToHA() {
-    const entityId = (this.getScheduleSyncInputTextEntity() || '').trim();
-    if (!this.hass?.callService) {
-      this.addLogEntry('Zeitplan-Sync: keine HA-Verbindung (callService fehlt).');
-      return;
-    }
-    if (!entityId) {
-      this.addLogEntry('Zeitplan-Sync: unter Einstellungen eine zentrale input_text (Hilfsmittel) eintragen.');
-      return;
-    }
-    const root = this.buildMergedScheduleSyncPayloadCompact();
-    const json = JSON.stringify(root);
-    // HA: Entity-Zustände sind max. 255 Zeichen (auch input_text). Längere Werte
-    // werden abgewiesen – dann bleibt der alte Zustand / unknown. Nicht senden.
-    if (json.length > 255) {
-      this.addLogEntry(
-        `Zeitplan-Sync abgebrochen: selbst kompaktes JSON (v2) hat ${json.length} Zeichen, max. 255. Kürzere button.*-Namen in HA oder weniger Klappen mit langen IDs.`,
-      );
-      return;
-    }
-
-    // Empfohlene Signatur: service_data nur { value }, Ziel als 4. Argument (Core/Frontend).
-    let promise = this.hass.callService('input_text', 'set_value', { value: json }, { entity_id: entityId });
-    if (!promise || typeof promise.then !== 'function') {
-      promise = this.hass.callService('input_text', 'set_value', {
-        entity_id: entityId,
-        value: json,
-      });
-    }
-    if (!promise || typeof promise.then !== 'function') {
-      this.addLogEntry('Zeitplan-Sync: callService lieferte kein Promise (unerwartetes Frontend).');
-      return;
-    }
-    try {
-      await promise;
-      this.addLogEntry(`Zeitplan-Sync gesendet → ${entityId}`);
-      setTimeout(() => this._verifyScheduleSyncReadBack(entityId, json, 0), 250);
-    } catch (err) {
-      const msg = err?.message || err?.body?.message || String(err);
-      this.addLogEntry(`Zeitplan-Sync fehlgeschlagen (${entityId}): ${msg}`);
-    }
-  }
-
-  /** Alias: schreibt immer das vollständige Sammel-JSON. */
-  async pushScheduleSyncToHA() {
-    await this.pushAllScheduleSyncsToHA();
-  }
-
   setTheme(theme) {
     this.theme = theme;
   }
@@ -1327,7 +1112,7 @@ class HKWebApp extends LitElement {
     ];
     return html`
       <div class="sidebar ${this.sidebarCollapsed ? 'collapsed' : ''}">
-        <div class="sidebar-version">v${HKWebApp.VERSION}</div>
+        <div class="sidebar-version">v${HKWebApp.getDisplayVersion()}</div>
         <button class="sidebar-toggle" @click=${() => this.toggleSidebar()} title="${this.sidebarCollapsed ? 'Sidebar erweitern' : 'Sidebar reduzieren'}">
           ${this.sidebarCollapsed 
             ? html`<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>`
@@ -1354,23 +1139,6 @@ class HKWebApp extends LitElement {
               </div>
             `
           )}
-          <div
-            class="menu-item menu-item-back"
-            @click=${() => {
-              this.goBackToHA();
-              // Auf mobilen Geräten Sidebar nach Klick schließen
-              if (window.matchMedia('(max-width: 768px)').matches) {
-                this.sidebarCollapsed = true;
-                localStorage.setItem('hkweb_sidebarCollapsed', 'true');
-              }
-            }}
-            title="${this.sidebarCollapsed ? 'Zurück zu Home Assistant' : ''}"
-          >
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M19 12H5M12 19l-7-7 7-7"/>
-            </svg>
-            ${!this.sidebarCollapsed ? html`<span class="menu-label">Zurück</span>` : ''}
-          </div>
         </div>
       </div>
     `;
@@ -1718,27 +1486,6 @@ class HKWebApp extends LitElement {
             />
           </div>
         </div>
-
-        <div class="settings-title" style="margin-top:24px">Zeitpläne → Home Assistant</div>
-        <div class="settings-card" style="margin-top:8px">
-          <p class="einstellungen-sync-hint">
-            Eine Hilfsmittel-<strong>input_text</strong> in HA anlegen (meist max. <strong>255 Zeichen</strong>). Hier die
-            <strong>entity_id</strong> eintragen – die App speichert <strong>alle Klappen</strong> in <strong>einem</strong>
-            JSON darin. Automatisierung: <code class="inline-code">HA_ZEITPLAENE_AUTOMATION.yaml</code>.
-          </p>
-          <div class="entity-input-row" style="margin-top:12px">
-            <label class="entity-label">Zentrale input_text:</label>
-            <div class="entity-input-wrapper">
-              <input
-                type="text"
-                class="entity-input ${this._scheduleSyncInputClass()}"
-                .value=${this.scheduleSyncInputTextEntity}
-                placeholder="z. B. input_text.hk_web_zeitplaene"
-                @change=${(e) => this.setScheduleSyncInputTextEntity(e.target.value)}
-              />
-            </div>
-          </div>
-        </div>
       </div>
     `;
   }
@@ -1750,15 +1497,6 @@ class HKWebApp extends LitElement {
     return html`
       <div class="content-header">
         <h1>Modi</h1>
-      </div>
-      <div class="modi-schedule-sync-bar glass-card">
-        <p class="sync-bar-text">
-          Zeitpläne für <strong>alle Klappen</strong> werden in <strong>einer</strong> HA-<code class="inline-code">input_text</code>
-          gespeichert (Tab <strong>Einstellungen</strong>). Ausführung: <code class="inline-code">HA_ZEITPLAENE_AUTOMATION.yaml</code>.
-        </p>
-        <button type="button" class="glass-btn schedule-sync-btn" @click=${() => this.pushScheduleSyncToHA()}>
-          Alle Zeitpläne nach Home Assistant synchronisieren
-        </button>
       </div>
       <div class="modi-klappen-container">
         ${klappen.map((k) => {
@@ -1841,8 +1579,8 @@ class HKWebApp extends LitElement {
         </div>
         <div class="settings-section schedule-ha-actions">
           <p class="info-text">
-            Alle Klappen liegen in <strong>einer</strong> Hilfs-Entity (siehe <strong>Einstellungen</strong>). Oben im Tab
-            „Modi“ kannst du alles auf einmal synchronisieren. Automatisch nach Änderungen (kurz verzögert).
+            Die Zeiten werden lokal gespeichert; die Ausführung erfolgt in Home Assistant über Automatisierungen
+            oder den Add-on-Scheduler — nicht über eine zentrale <code class="inline-code">input_text</code>-Hilfsentity.
           </p>
         </div>
       </div>
@@ -2270,22 +2008,6 @@ class HKWebApp extends LitElement {
         font-size: 0.6rem;
         padding: 3px 6px;
         left: 8px;
-      }
-      .menu-item-back {
-        margin-top: 8px;
-        padding-top: 12px;
-        border-top: 1px solid rgba(0,0,0,0.1);
-      }
-      .menu-item-back:hover {
-        background: rgba(0,122,255,0.15);
-        color: #007aff;
-      }
-      .menu-item-back svg {
-        color: #007aff;
-        opacity: 0.8;
-      }
-      .menu-item-back:hover svg {
-        opacity: 1;
       }
       .sidebar-overlay {
         display: none;
@@ -3023,21 +2745,6 @@ class HKWebApp extends LitElement {
         padding: 20px;
         text-align: center;
         color: var(--liq-text, #2a2e3a);
-      }
-      .modi-schedule-sync-bar {
-        margin-top: 16px;
-        padding: 16px 20px;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        align-items: flex-start;
-      }
-      .sync-bar-text {
-        margin: 0;
-        font-size: 0.88rem;
-        color: var(--liq-text, #2a2e3a);
-        opacity: 0.88;
-        line-height: 1.45;
       }
       .einstellungen-sync-hint {
         margin: 0;

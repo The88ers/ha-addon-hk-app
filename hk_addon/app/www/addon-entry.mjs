@@ -2,7 +2,10 @@
  * HK Addon – lädt dieselbe Lit-App wie hkweb-app-v2.1.17 (liquid-glass-app.js),
  * versorgt sie mit hass über den Supervisor-Proxy (hass-addon-bridge.mjs).
  */
+import { ADDON_VERSION } from './addon-meta.mjs';
+
 window.__HK_ADDON__ = true;
+window.__HK_ADDON_VERSION__ = ADDON_VERSION;
 
 import { mountHassBridge } from './hass-addon-bridge.mjs';
 
