@@ -14,6 +14,11 @@ const HKWEB_STATE_POLL_MS = 200;
 const HKWEB_AUTOSAVE_RELATIVE = './hkweb-autosave.json';
 
 /**
+ * Entity-IDs: Baseline siehe `hk_addon/ENTITY_NOMENKLATUR.md` → Projektroot `HOME ASSISTANT ENTITÄTEN.md`.
+ * Standard-IDs je Klappe: buildKlappeEntityDefaults(klappeId). Wichtig: Status = sensor.hkN_status_hkN (Ausnahme).
+ */
+
+/**
  * Nach „Zurück“ im Browser liefert der Back-Forward-Cache (bfcache) oft die alte
  * Seite ohne neu geladene JS-Module – die Versionsanzeige bleibt veraltet.
  * Bei Wiederanzeige aus dem bfcache: vollständig neu laden.
@@ -58,6 +63,7 @@ class HKWebApp extends LitElement {
       showEntityCheckModal: { type: Boolean },
       entityCheckProgress: { type: Object },
       entityCheckResults: { type: Object },
+      entityAutoRepairBusy: { type: Boolean },
       /** false bis hkweb-autosave.json (optional) geladen oder übersprungen wurde */
       settingsReady: { type: Boolean },
       /** Tab „Log“: app | addon */
@@ -87,6 +93,7 @@ class HKWebApp extends LitElement {
     this.showEntityCheckModal = false;
     this.entityCheckProgress = { current: 0, total: 0, currentKlappe: '', currentEntity: '' };
     this.entityCheckResults = { klappen: [], errors: [], summary: {} };
+    this.entityAutoRepairBusy = false;
     this.logPanelTab = 'app';
     this.addonLogLines = [];
     this._persistTimer = null;
@@ -469,27 +476,35 @@ class HKWebApp extends LitElement {
     });
   }
 
+  /**
+   * Kanonische Default-Entity-IDs für eine Klappe `hkN` gemäß HOME ASSISTANT ENTITÄTEN.md.
+   * Ausnahme Status: sensor.hkN_status_hkN (nicht hkN_hkN_status).
+   */
+  buildKlappeEntityDefaults(klappeId) {
+    const d = klappeId;
+    return {
+      statusEntity: `sensor.${d}_status_${d}`,
+      zustandEntity: `sensor.${d}_${d}_zustand`,
+      lastActionEntity: `sensor.${d}_${d}_letzte_aktion`,
+      endstopObenEntity: `sensor.${d}_${d}_endschalter_oben_status`,
+      endstopUntenEntity: `sensor.${d}_${d}_endschalter_unten_status`,
+      buttonOeffnen: `button.${d}_${d}_offnen`,
+      buttonSchliessen: `button.${d}_${d}_schliessen`,
+      buttonStop: `button.${d}_${d}_stop`,
+      buttonReset: '',
+      buttonZentrale: '',
+      speedEntity: `number.${d}_${d}_geschwindigkeit`,
+      accelEntity: '',
+      motorEnableEntity: `switch.${d}_${d}_motor_enable`,
+    };
+  }
+
   getDefaultKlappenConfig() {
     return [
       {
         id: 'hk1',
         name: 'HK1 Gehege',
-        // ESPHome „Code Master.txt“ / HA: Template-Textsensoren als sensor.*, Endschalter-Text „Aktiv/Inaktiv“
-        statusEntity: 'sensor.hk1_hk1_status',
-        zustandEntity: 'sensor.hk1_hk1_zustand',
-        lastActionEntity: 'sensor.hk1_hk1_letzte_aktion',
-        endstopObenEntity: 'sensor.hk1_hk1_endschalter_oben_status',
-        endstopUntenEntity: 'sensor.hk1_hk1_endschalter_unten_status',
-        // Öffnen-Button: entity_id in HA button.hk1_hk1_offnen (Name in ESP ohne Umlaut)
-        buttonOeffnen: 'button.hk1_hk1_offnen',
-        buttonSchliessen: 'button.hk1_hk1_schliessen',
-        buttonStop: 'button.hk1_hk1_stop',
-        buttonReset: '',
-        buttonZentrale: '',
-        // Motor: Geschwindigkeit 0–600 % (Number min/max kommen von ESPHome; keine Beschleunigungs-Number)
-        speedEntity: 'number.hk1_hk1_geschwindigkeit',
-        accelEntity: '',
-        motorEnableEntity: 'switch.hk1_hk1_motor_enable',
+        ...this.buildKlappeEntityDefaults('hk1'),
       },
       {
         id: 'hk2',
@@ -640,6 +655,248 @@ class HKWebApp extends LitElement {
     return this.hass.states.hasOwnProperty(entityId);
   }
 
+  /** Felder und Labels für Entity-Prüfung / Auto-Reparatur (eine Quelle). */
+  getEntityCheckFieldDefinitions() {
+    return [
+      { key: 'statusEntity', label: 'Status', category: 'Text-Sensoren' },
+      { key: 'zustandEntity', label: 'Zustand', category: 'Text-Sensoren' },
+      { key: 'lastActionEntity', label: 'Letzte Aktion', category: 'Text-Sensoren' },
+      { key: 'endstopObenEntity', label: 'Endschalter Oben', category: 'Text-Sensoren' },
+      { key: 'endstopUntenEntity', label: 'Endschalter Unten', category: 'Text-Sensoren' },
+      { key: 'buttonOeffnen', label: 'Öffnen', category: 'Buttons' },
+      { key: 'buttonSchliessen', label: 'Schließen', category: 'Buttons' },
+      { key: 'buttonStop', label: 'Stop', category: 'Buttons' },
+      { key: 'buttonReset', label: 'Treiber Reset', category: 'Buttons' },
+      { key: 'buttonZentrale', label: 'Zentrale', category: 'Buttons' },
+      { key: 'speedEntity', label: 'Geschwindigkeit (%)', category: 'Motor-Parameter' },
+      { key: 'accelEntity', label: 'Beschleunigung', category: 'Motor-Parameter' },
+      { key: 'motorEnableEntity', label: 'Motor Enable', category: 'Motor-Parameter' },
+    ];
+  }
+
+  _escapeRegExp(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  /**
+   * Kandidaten-IDs für Auto-Reparatur (HOME ASSISTANT ENTITÄTEN.md):
+   * Defaults, kanonische buildKlappeEntityDefaults, dann typische Tippfehler.
+   * Wichtig: Status = sensor.hkN_status_hkN — keine Vertauschung zu hkN_hkN_status.
+   */
+  _buildEntityRepairCandidates(klappeId, fieldKey, configuredId) {
+    const cands = [];
+    const seen = new Set();
+    const push = (id) => {
+      if (!id || typeof id !== 'string') return;
+      const t = id.trim();
+      if (!t || seen.has(t)) return;
+      seen.add(t);
+      cands.push(t);
+    };
+
+    const defKlappe = this.getDefaultKlappenConfig().find((x) => x.id === klappeId);
+    if (defKlappe?.[fieldKey]) push(defKlappe[fieldKey]);
+
+    const canonical = this.buildKlappeEntityDefaults(klappeId);
+    if (canonical[fieldKey]) push(canonical[fieldKey]);
+
+    if (!configuredId || typeof configuredId !== 'string') return cands;
+
+    const trimmed = configuredId.trim();
+    const dot = trimmed.indexOf('.');
+    if (dot < 0) return cands;
+    const domain = trimmed.slice(0, dot);
+    const rest = trimmed.slice(dot + 1);
+    const kid = klappeId;
+    const eKid = this._escapeRegExp(kid);
+
+    if (fieldKey === 'statusEntity') {
+      push(`sensor.${kid}_status_${kid}`);
+      push(`sensor.${kid}_${kid}_status`);
+      return cands;
+    }
+
+    const reSwap = new RegExp(`^${eKid}_([a-z0-9_]+)_${eKid}$`);
+    const mSwap = rest.match(reSwap);
+    if (mSwap) {
+      push(`${domain}.${kid}_${kid}_${mSwap[1]}`);
+    }
+
+    if (fieldKey === 'lastActionEntity' && rest === `${kid}_letzte_aktion`) {
+      push(`${domain}.${kid}_${kid}_letzte_aktion`);
+    }
+
+    const es = rest.match(new RegExp(`^${eKid}_endschalter_${eKid}_(oben|unten)$`));
+    if (es) {
+      push(`${domain}.${kid}_${kid}_endschalter_${es[1]}_status`);
+      push(`${domain}.${kid}_${kid}_endschalter_${es[1]}`);
+    }
+
+    if (fieldKey === 'endstopObenEntity' || fieldKey === 'endstopUntenEntity') {
+      const pos = fieldKey === 'endstopObenEntity' ? 'oben' : 'unten';
+      if (rest === `${kid}_${kid}_endschalter_${pos}`) {
+        push(`sensor.${kid}_${kid}_endschalter_${pos}_status`);
+      }
+      push(`binary_sensor.${kid}_${kid}_endschalter_${pos}`);
+    }
+
+    if (rest === `${kid}_zustand_${kid}`) {
+      push(`${domain}.${kid}_${kid}_zustand`);
+    }
+
+    if (fieldKey === 'buttonReset') {
+      push(`button.${kid}_${kid}_reset`);
+      push(`button.${kid}_${kid}_reset_pulse`);
+      push(`button.${kid}_${kid}_treiber_reset`);
+      push(`button.${kid}_${kid}_treiber_reset_pulse`);
+      push(`button.${kid}_treiber_reset_pulse`);
+    }
+
+    return cands;
+  }
+
+  _pickFirstExistingEntityId(candidates) {
+    if (!this.hass?.states || !candidates?.length) return null;
+    for (const id of candidates) {
+      if (this.hass.states.hasOwnProperty(id)) return id;
+    }
+    return null;
+  }
+
+  /** Gleiche Ergebnisstruktur wie die async Prüfung, ohne Verzögerung (nach Auto-Reparatur). */
+  buildEntityCheckResultsSync() {
+    const klappen = this.getKlappenConfig();
+    const entityFields = this.getEntityCheckFieldDefinitions();
+    const results = { klappen: [], errors: [], summary: { total: 0, valid: 0, invalid: 0, notConfigured: 0 } };
+
+    for (const k of klappen) {
+      const klappeResult = {
+        id: k.id,
+        name: k.name,
+        categories: {},
+        errors: [],
+      };
+
+      entityFields.forEach((field) => {
+        if (!klappeResult.categories[field.category]) {
+          klappeResult.categories[field.category] = [];
+        }
+      });
+
+      for (const field of entityFields) {
+        const entityId = k[field.key];
+        if (!entityId) continue;
+
+        try {
+          const exists = this.checkEntityExists(entityId);
+          results.summary.total++;
+          const entityResult = {
+            field: field.key,
+            label: field.label,
+            entityId,
+            exists,
+            category: field.category,
+          };
+          if (!klappeResult.categories[field.category]) {
+            klappeResult.categories[field.category] = [];
+          }
+          klappeResult.categories[field.category].push(entityResult);
+
+          if (exists) {
+            results.summary.valid++;
+          } else {
+            results.summary.invalid++;
+            results.errors.push({
+              klappe: k.name,
+              field: field.label,
+              entityId,
+            });
+            klappeResult.errors.push({
+              field: field.label,
+              entityId,
+            });
+          }
+        } catch (error) {
+          console.error(`Fehler beim Prüfen von ${entityId}:`, error);
+          results.summary.invalid++;
+          results.errors.push({
+            klappe: k.name,
+            field: field.label,
+            entityId,
+          });
+          klappeResult.errors.push({
+            field: field.label,
+            entityId,
+          });
+        }
+      }
+
+      results.klappen.push(klappeResult);
+    }
+
+    return results;
+  }
+
+  performAutoRepairFromEntityCheck() {
+    if (!this.hass?.states) {
+      this.addLogEntry('Auto-Reparatur: keine Verbindung zu Home Assistant');
+      return;
+    }
+    if (this.entityAutoRepairBusy) return;
+
+    this.entityAutoRepairBusy = true;
+    this.requestUpdate();
+
+    const klappen = this.getKlappenConfig();
+    const entityFields = this.getEntityCheckFieldDefinitions();
+    const repairs = [];
+
+    for (const k of klappen) {
+      for (const field of entityFields) {
+        const raw = k[field.key];
+        if (!raw || !String(raw).trim()) continue;
+        const entityId = String(raw).trim();
+        if (this.checkEntityExists(entityId)) continue;
+
+        const candidates = this._buildEntityRepairCandidates(k.id, field.key, entityId);
+        const resolved = this._pickFirstExistingEntityId(candidates);
+        if (resolved && resolved !== entityId) {
+          repairs.push({
+            klappeId: k.id,
+            field: field.key,
+            from: entityId,
+            to: resolved,
+          });
+        }
+      }
+    }
+
+    if (repairs.length === 0) {
+      this.addLogEntry('Auto-Reparatur: keine bekannten Alternativen in HA gefunden (IDs manuell prüfen).');
+      this.entityAutoRepairBusy = false;
+      this.requestUpdate();
+      return;
+    }
+
+    if (!this.klappenConfig) {
+      this.klappenConfig = this.getKlappenConfig();
+    }
+    for (const r of repairs) {
+      const klappe = this.klappenConfig.find((x) => x.id === r.klappeId);
+      if (klappe) klappe[r.field] = r.to;
+    }
+    this.saveKlappenConfig(this.klappenConfig);
+
+    this.entityValidation = this.validateAllEntities();
+    this.entityCheckResults = this.buildEntityCheckResultsSync();
+    this.addLogEntry(
+      `Auto-Reparatur: ${repairs.length} Entity-ID(s) angepasst — ${repairs.map((r) => `${r.from} → ${r.to}`).join('; ')}`,
+    );
+
+    this.entityAutoRepairBusy = false;
+    this.requestUpdate();
+  }
+
   validateAllEntities() {
     if (!this.hass || !this.hass.states) return {};
     const klappen = this.getKlappenConfig();
@@ -679,21 +936,7 @@ class HKWebApp extends LitElement {
     this.requestUpdate();
 
     const klappen = this.getKlappenConfig();
-    const entityFields = [
-      { key: 'statusEntity', label: 'Status', category: 'Text-Sensoren' },
-      { key: 'zustandEntity', label: 'Zustand', category: 'Text-Sensoren' },
-      { key: 'lastActionEntity', label: 'Letzte Aktion', category: 'Text-Sensoren' },
-      { key: 'endstopObenEntity', label: 'Endschalter Oben', category: 'Text-Sensoren' },
-      { key: 'endstopUntenEntity', label: 'Endschalter Unten', category: 'Text-Sensoren' },
-      { key: 'buttonOeffnen', label: 'Öffnen', category: 'Buttons' },
-      { key: 'buttonSchliessen', label: 'Schließen', category: 'Buttons' },
-      { key: 'buttonStop', label: 'Stop', category: 'Buttons' },
-      { key: 'buttonReset', label: 'Treiber Reset', category: 'Buttons' },
-      { key: 'buttonZentrale', label: 'Zentrale', category: 'Buttons' },
-      { key: 'speedEntity', label: 'Geschwindigkeit (%)', category: 'Motor-Parameter' },
-      { key: 'accelEntity', label: 'Beschleunigung', category: 'Motor-Parameter' },
-      { key: 'motorEnableEntity', label: 'Motor Enable', category: 'Motor-Parameter' },
-    ];
+    const entityFields = this.getEntityCheckFieldDefinitions();
 
     // Berechne Gesamtzahl
     let totalEntities = 0;
@@ -1976,7 +2219,7 @@ class HKWebApp extends LitElement {
             type="text" 
             class="entity-input ${isValid === false ? 'entity-invalid' : isValid === true ? 'entity-valid' : ''}"
             .value="${value || ''}"
-            placeholder="z.B. sensor.hk1_hk1_status"
+            placeholder="z. B. sensor.hk1_status_hk1 / button.hk1_hk1_offnen"
             @change=${e => this.updateKlappenConfig(klappeId, field, e.target.value)}
           />
           ${isValid === true ? html`
@@ -3683,6 +3926,33 @@ class HKWebApp extends LitElement {
         font-size: 1.5rem;
         font-weight: 700;
       }
+      .entity-check-actions {
+        margin-top: 20px;
+        padding-top: 16px;
+        border-top: 1px solid rgba(0,0,0,0.08);
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        align-items: flex-start;
+      }
+      .entity-repair-hint {
+        margin: 0;
+        font-size: 0.85rem;
+        line-height: 1.45;
+        color: var(--liq-text, #2a2e3a);
+        opacity: 0.85;
+      }
+      .entity-repair-hint code {
+        font-size: 0.8rem;
+        padding: 2px 6px;
+        border-radius: 6px;
+        background: rgba(0,0,0,0.06);
+        font-family: 'Courier New', monospace;
+      }
+      .entity-auto-repair-btn:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
       .check-klappen-list {
         display: flex;
         flex-direction: column;
@@ -3973,6 +4243,21 @@ class HKWebApp extends LitElement {
             <span class="stat-value">${results.summary.total}</span>
           </div>
         </div>
+        ${results.summary.invalid > 0 ? html`
+          <div class="entity-check-actions">
+            <p class="entity-repair-hint">
+              Auto-Reparatur setzt fehlerhafte IDs auf die Baseline (<code>HOME ASSISTANT ENTITÄTEN.md</code>) bzw. die erste passende Entity in Home Assistant (z.&nbsp;B. falsch <code>sensor.hk1_hk1_status</code> → richtig <code>sensor.hk1_status_hk1</code>).
+            </p>
+            <button
+              type="button"
+              class="refresh-entities-btn entity-auto-repair-btn"
+              ?disabled=${this.entityAutoRepairBusy}
+              @click=${() => this.performAutoRepairFromEntityCheck()}
+            >
+              ${this.entityAutoRepairBusy ? 'Reparatur…' : 'Auto-Reparatur'}
+            </button>
+          </div>
+        ` : ''}
       </div>
 
       <div class="check-klappen-list">
