@@ -3,6 +3,11 @@
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/).  
 Die **Versionsnummer** entspricht `version` in `hk_addon/config.yaml` (Quelle für Home Assistant).
 
+## [0.1.2] – 2026-03-30
+
+### Fixed
+- `config.yaml`: **`init: false`** – verhindert Konflikt zwischen Docker-Standard-Init und s6-overlay im HA-Base-Image (Fehler `s6-overlay-suexec: fatal: can only run as pid 1`).
+
 ## [0.1.1] – 2026-03-30
 
 ### Changed
@@ -16,5 +21,6 @@ Die **Versionsnummer** entspricht `version` in `hk_addon/config.yaml` (Quelle f�
 - Erstes Add-on-Gerüst: `hk_addon` mit Ingress, Node-Server, REST-Proxy zur HA-API (`SUPERVISOR_TOKEN`), Scheduler-Stub, Platzhalter-UI.
 - `repository.yaml`, Übersetzungen (`translations/`), `apparmor.txt`, Watchdog-URL, Doku für Installation über GitHub.
 
+[0.1.2]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.1.2
 [0.1.1]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.1.1
 [0.1.0]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.1.0
