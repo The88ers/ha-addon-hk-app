@@ -1,4 +1,9 @@
 import { LitElement, html, css } from 'https://unpkg.com/lit-element/lit-element.js?module';
+import {
+  loadSettingsFromAddonServer,
+  saveSettingsToAddonServer,
+  fetchAddonLogs,
+} from './addon-persist.mjs';
 
 // Vault-Tec Terminal Theme - verwendet system fonts (Courier New, Consolas)
 
@@ -55,6 +60,9 @@ class HKWebApp extends LitElement {
       entityCheckResults: { type: Object },
       /** false bis hkweb-autosave.json (optional) geladen oder übersprungen wurde */
       settingsReady: { type: Boolean },
+      /** Tab „Log“: app | addon */
+      logPanelTab: { type: String },
+      addonLogLines: { type: Array },
     };
   }
 
@@ -79,6 +87,11 @@ class HKWebApp extends LitElement {
     this.showEntityCheckModal = false;
     this.entityCheckProgress = { current: 0, total: 0, currentKlappe: '', currentEntity: '' };
     this.entityCheckResults = { klappen: [], errors: [], summary: {} };
+    this.logPanelTab = 'app';
+    this.addonLogLines = [];
+    this._persistTimer = null;
+    this._suppressPersist = false;
+    this._addonLogPollTimer = null;
     // Sidebar standardmäßig auf mobilen Geräten collapsed
     const isMobile = window.matchMedia('(max-width: 768px)').matches;
     this.sidebarCollapsed = localStorage.getItem('hkweb_sidebarCollapsed') !== null 
@@ -218,6 +231,7 @@ class HKWebApp extends LitElement {
         this._rehydrateFromLocalStorage();
         this.requestUpdate();
         this.addLogEntry('Einstellungen aus Datei importiert.');
+        this._schedulePersistToData();
       } catch (err) {
         this.addLogEntry(`Import fehlgeschlagen: ${err?.message || err}`);
       }
@@ -227,10 +241,16 @@ class HKWebApp extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this._loadAutosaveFromServerIfPresent().finally(() => {
-      this.settingsReady = true;
-      this.requestUpdate();
-    });
+    this._suppressPersist = true;
+    this._initSettingsAndLoad()
+      .finally(() => {
+        this._suppressPersist = false;
+        this.settingsReady = true;
+        this.requestUpdate();
+        if (typeof window !== 'undefined' && window.__HK_ADDON__) {
+          this._schedulePersistToData();
+        }
+      });
     this._onVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
         this._lastStatesSnapshot = '';
@@ -246,8 +266,73 @@ class HKWebApp extends LitElement {
     window.addEventListener('resize', this.handleResize);
   }
 
+  async _initSettingsAndLoad() {
+    let loaded = false;
+    if (typeof window !== 'undefined' && window.__HK_ADDON__) {
+      try {
+        const data = await loadSettingsFromAddonServer();
+        if (data && this._applySettingsSnapshotFromObject(data)) {
+          this._rehydrateFromLocalStorage();
+          this.addLogEntry('Einstellungen aus Add-on-Speicher (/data) geladen.');
+          loaded = true;
+        }
+      } catch (e) {
+        console.warn('[HK Add-on] Laden /data:', e);
+      }
+    }
+    if (!loaded) {
+      await this._loadAutosaveFromServerIfPresent();
+    }
+  }
+
+  /** Debounced Schreiben nach /data (Home-Assistant-Add-on) */
+  _schedulePersistToData() {
+    if (!this.settingsReady || this._suppressPersist) return;
+    if (typeof window === 'undefined' || !window.__HK_ADDON__) return;
+    clearTimeout(this._persistTimer);
+    this._persistTimer = setTimeout(async () => {
+      try {
+        const snap = this.buildSettingsSnapshot();
+        await saveSettingsToAddonServer(snap);
+      } catch (e) {
+        console.warn('[HK Add-on] Speichern /data:', e);
+      }
+    }, 700);
+  }
+
+  async _refreshAddonLog() {
+    if (typeof window === 'undefined' || !window.__HK_ADDON__) return;
+    try {
+      const lines = await fetchAddonLogs(900);
+      this.addonLogLines = lines;
+    } catch (e) {
+      this.addonLogLines = [`[Fehler] ${e?.message || e}`];
+    }
+    this.requestUpdate();
+  }
+
+  _manageAddonLogPoll() {
+    if (this._addonLogPollTimer) {
+      clearInterval(this._addonLogPollTimer);
+      this._addonLogPollTimer = null;
+    }
+    if (
+      this.activeTab === 'log' &&
+      this.logPanelTab === 'addon' &&
+      typeof window !== 'undefined' &&
+      window.__HK_ADDON__
+    ) {
+      this._refreshAddonLog();
+      this._addonLogPollTimer = setInterval(() => this._refreshAddonLog(), 4000);
+    }
+  }
+
   disconnectedCallback() {
     super.disconnectedCallback();
+    if (this._addonLogPollTimer) {
+      clearInterval(this._addonLogPollTimer);
+      this._addonLogPollTimer = null;
+    }
     this.stopStatePoll();
     if (this._onVisibilityOrFocus) {
       window.removeEventListener('visibilitychange', this._onVisibilityOrFocus);
@@ -268,6 +353,7 @@ class HKWebApp extends LitElement {
   toggleSidebar() {
     this.sidebarCollapsed = !this.sidebarCollapsed;
     localStorage.setItem('hkweb_sidebarCollapsed', this.sidebarCollapsed.toString());
+    this._schedulePersistToData();
     this.requestUpdate();
   }
   
@@ -340,6 +426,7 @@ class HKWebApp extends LitElement {
       localStorage.setItem('liqglass_theme', this.theme);
       this.addLogEntry(`Theme geändert zu: ${this.theme}`);
       this.applyTransparency();
+      this._schedulePersistToData();
     }
     if (changedProps.has('cardAlpha') || changedProps.has('sidebarAlpha')) {
       this.applyTransparency();
@@ -351,6 +438,10 @@ class HKWebApp extends LitElement {
       if (changedProps.has('sidebarAlpha')) {
         this.addLogEntry(`Sidebar-Transparenz geändert zu: ${Math.round(this.sidebarAlpha * 100)}%`);
       }
+      this._schedulePersistToData();
+    }
+    if (changedProps.has('activeTab') || changedProps.has('logPanelTab')) {
+      this._manageAddonLogPoll();
     }
     if (changedProps.has('hass')) {
       // Sofortiger Check beim ersten Setzen
@@ -516,6 +607,7 @@ class HKWebApp extends LitElement {
     config.forEach(k => {
       localStorage.setItem('klappen_name_' + k.id, k.name);
     });
+    this._schedulePersistToData();
   }
 
   getKlappenConfig() {
@@ -756,6 +848,7 @@ class HKWebApp extends LitElement {
 
   saveModi() {
     localStorage.setItem('hkweb_klappen_modi', JSON.stringify(this.klappenModi));
+    this._schedulePersistToData();
   }
 
   getKlappenModus(klappeId) {
@@ -1039,6 +1132,7 @@ class HKWebApp extends LitElement {
     this._speedUiOverride[k.id] = { value: clamped, until: Date.now() + 4000 };
     localStorage.setItem(`hkweb_speed_${k.id}`, String(clamped));
     this._setNumberValue(k.speedEntity, clamped);
+    this._schedulePersistToData();
     this.requestUpdate();
   }
 
@@ -1047,11 +1141,13 @@ class HKWebApp extends LitElement {
     // Speichere Wert in localStorage
     localStorage.setItem(`hkweb_accel_${k.id}`, value.toString());
     this._setNumberValue(k.accelEntity, value);
+    this._schedulePersistToData();
     this.requestUpdate();
   }
 
   handleKlappenNameChange(id, e) {
     localStorage.setItem('klappen_name_' + id, e.target.value);
+    this._schedulePersistToData();
     this.requestUpdate();
   }
 
@@ -1482,14 +1578,15 @@ class HKWebApp extends LitElement {
           Wähle zwischen hellem und dunklem Design.
         </div>
 
-        <div class="settings-title" style="margin-top:24px">Einstellungen sichern (AutoSave-Datei)</div>
+        <div class="settings-title" style="margin-top:24px">Einstellungen sichern</div>
         <div class="settings-card" style="margin-top:8px">
           <p class="einstellungen-sync-hint">
-            Beim Start lädt die App optional <code class="inline-code">hkweb-autosave.json</code> aus dem Ordner
-            <strong>/config/www/hkweb/</strong> (neben <code class="inline-code">hkweb-current.mjs</code>). So bleiben Klappen,
-            Modi und Design nach einem Release oder auf einem anderen Gerät erhalten. Der Browser kann nicht direkt auf den
-            Server schreiben: <strong>Export</strong> herunterladen und die Datei per Samba/File Editor nach
-            <code class="inline-code">www/hkweb/</code> kopieren — oder <strong>Import</strong> wählen.
+            <strong>Home-Assistant-Add-on:</strong> Änderungen werden automatisch nach
+            <code class="inline-code">/data/hkweb-settings.json</code> auf dem HA-Gerät geschrieben und beim nächsten
+            Start wieder geladen (Backup ohne manuellen Export).<br /><br />
+            <strong>Optional (klassische Web-App):</strong> <code class="inline-code">hkweb-autosave.json</code> aus
+            <code class="inline-code">www/hkweb/</code> wird nur geladen, wenn noch keine Add-on-Daten vorliegen —
+            <strong>Export</strong>/<strong>Import</strong> für Datei-Backup und Umzug.
           </p>
           <div class="entity-input-row" style="margin-top:12px;flex-wrap:wrap;gap:8px">
             <button type="button" class="glass-btn schedule-sync-btn" @click=${() => this.exportSettingsToFile()}>
@@ -1928,20 +2025,86 @@ class HKWebApp extends LitElement {
   }
 
   renderLog() {
+    const showAddonLog = typeof window !== 'undefined' && window.__HK_ADDON__;
+    if (!showAddonLog) {
+      return html`
+        <div class="content-header"><h1>Log</h1></div>
+        <div class="glass-card log-card">
+          <h2>Letzte Änderungen in der App</h2>
+          <ul class="log-list">
+            ${this.logEntries.length === 0
+              ? html`<li class="log-empty">Noch keine Änderungen protokolliert.</li>`
+              : this.logEntries.map(
+                  (e) => html`
+                    <li class="log-entry">
+                      <span class="log-time">[${e.ts}]</span> ${e.msg}
+                    </li>
+                  `,
+                )}
+          </ul>
+        </div>
+      `;
+    }
+    const isAddon = this.logPanelTab === 'addon';
     return html`
       <div class="content-header"><h1>Log</h1></div>
-      <div class="glass-card log-card">
-        <h2>Letzte Änderungen</h2>
-        <ul class="log-list">
-          ${this.logEntries.length === 0
-            ? html`<li class="log-empty">Noch keine Änderungen protokolliert.</li>`
-            : this.logEntries.map(e => html`
-              <li class="log-entry">
-                <span class="log-time">[${e.ts}]</span> ${e.msg}
-              </li>
-            `)}
-        </ul>
+      <div class="log-subtabs glass-card">
+        <button
+          type="button"
+          class="log-subtab ${!isAddon ? 'active' : ''}"
+          @click=${() => {
+            this.logPanelTab = 'app';
+            this.requestUpdate();
+          }}
+        >
+          App (Aktionen)
+        </button>
+        <button
+          type="button"
+          class="log-subtab ${isAddon ? 'active' : ''}"
+          @click=${() => {
+            this.logPanelTab = 'addon';
+            this.requestUpdate();
+          }}
+        >
+          Add-on (Server)
+        </button>
+        ${isAddon
+          ? html`
+              <button type="button" class="log-refresh-btn" @click=${() => this._refreshAddonLog()}>
+                Aktualisieren
+              </button>
+            `
+          : ''}
       </div>
+      ${!isAddon
+        ? html`
+            <div class="glass-card log-card">
+              <h2>Letzte Änderungen in der App</h2>
+              <p class="log-panel-hint">Einträge aus Bedienung und Einstellungen (lokal im Browser).</p>
+              <ul class="log-list">
+                ${this.logEntries.length === 0
+                  ? html`<li class="log-empty">Noch keine Änderungen protokolliert.</li>`
+                  : this.logEntries.map(
+                      (e) => html`
+                        <li class="log-entry">
+                          <span class="log-time">[${e.ts}]</span> ${e.msg}
+                        </li>
+                      `,
+                    )}
+              </ul>
+            </div>
+          `
+        : html`
+            <div class="glass-card log-card log-card-addon">
+              <h2>Add-on-Server (Node)</h2>
+              <p class="log-panel-hint">
+                Ausgaben des Add-on-Prozesses (REST-Proxy, Speichern nach /data, Fehler). Zum Teilen mit Support
+                kopieren.
+              </p>
+              <pre class="log-addon-pre">${(this.addonLogLines || []).join('\n')}</pre>
+            </div>
+          `}
     `;
   }
 
@@ -2741,8 +2904,66 @@ class HKWebApp extends LitElement {
         opacity: 0.7;
         color: var(--liq-text, #2a2e3a);
       }
+      .log-subtabs {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 16px;
+        margin-bottom: 12px;
+        max-width: 900px;
+        width: 100%;
+      }
+      .log-subtab {
+        padding: 8px 16px;
+        border-radius: 12px;
+        border: 1.5px solid rgba(0, 0, 0, 0.12);
+        background: rgba(255, 255, 255, 0.35);
+        cursor: pointer;
+        font-size: 0.9rem;
+        color: var(--liq-text, #2a2e3a);
+      }
+      .log-subtab.active {
+        background: rgba(0, 122, 255, 0.2);
+        border-color: #007aff;
+        font-weight: 600;
+      }
+      .log-refresh-btn {
+        margin-left: auto;
+        padding: 6px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(0, 0, 0, 0.15);
+        background: rgba(255, 255, 255, 0.5);
+        cursor: pointer;
+        font-size: 0.85rem;
+        color: var(--liq-text, #2a2e3a);
+      }
+      .log-panel-hint {
+        margin: 0 0 12px 0;
+        font-size: 0.82rem;
+        opacity: 0.85;
+        line-height: 1.45;
+        color: var(--liq-text, #2a2e3a);
+      }
+      .log-addon-pre {
+        margin: 0;
+        padding: 12px;
+        font-size: 0.72rem;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: min(60vh, 520px);
+        overflow: auto;
+        background: rgba(0, 0, 0, 0.06);
+        border-radius: 12px;
+        font-family: ui-monospace, Consolas, 'Courier New', monospace;
+        color: var(--liq-text, #2a2e3a);
+      }
+      .log-card-addon {
+        max-width: 900px;
+      }
       .log-card {
-        max-width: 700px;
+        max-width: 900px;
         width: 100%;
         align-items: flex-start;
       }
