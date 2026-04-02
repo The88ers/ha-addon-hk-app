@@ -4,9 +4,15 @@
  */
 
 export const SUN_FETCH_UA =
-  'HK-Addon/0.2.16 (Home Assistant add-on; https://github.com/The88ers/ha-addon-hk-app)';
+  'HK-Addon/0.2.17 (Home Assistant add-on; https://github.com/The88ers/ha-addon-hk-app)';
 
 const geoCache = new Map();
+
+const SUN_HM_BERLIN = new Intl.DateTimeFormat('de-DE', {
+  hour: '2-digit',
+  minute: '2-digit',
+  timeZone: 'Europe/Berlin',
+});
 
 function parseUtcIso(iso) {
   const s = String(iso || '');
@@ -69,17 +75,11 @@ export async function getSunTimesForPlzDE(plz) {
     throw new Error('Sonnenzeiten konnten nicht geparst werden');
   }
 
-  const formatter = new Intl.DateTimeFormat('de-DE', {
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone: 'Europe/Berlin',
-  });
-
   return {
     plz: p,
     lat: latlon.lat,
     lon: latlon.lon,
-    sunrise: formatter.format(sunriseUTC),
-    sunset: formatter.format(sunsetUTC),
+    sunrise: SUN_HM_BERLIN.format(sunriseUTC),
+    sunset: SUN_HM_BERLIN.format(sunsetUTC),
   };
 }

@@ -28,17 +28,19 @@ function pad2(n) {
   return String(n).padStart(2, '0');
 }
 
+/** Ein Formatter pro Prozess: wiederholtes `new Intl.DateTimeFormat` kann auf schwachen Systemen OOM auslösen (ICU-Cache). */
+const BERLIN_WALL_CLOCK = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Europe/Berlin',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
 function getBerlinWallClockParts(d = new Date()) {
-  const fmt = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/Berlin',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-  const parts = fmt.formatToParts(d);
+  const parts = BERLIN_WALL_CLOCK.formatToParts(d);
   const pickN = (t) => Number(parts.find((p) => p.type === t)?.value ?? NaN);
   return {
     y: pickN('year'),
@@ -49,20 +51,23 @@ function getBerlinWallClockParts(d = new Date()) {
   };
 }
 
-function getBerlinTimeHM(d = new Date()) {
-  const { h, mi } = getBerlinWallClockParts(d);
+function berlinTimeHMFromParts(p) {
+  const { h, mi } = p;
   if (!Number.isFinite(h) || !Number.isFinite(mi)) return '00:00';
   return `${pad2(h)}:${pad2(mi)}`;
 }
 
-function getBerlinDateKey(d = new Date()) {
-  const { y, mo, da } = getBerlinWallClockParts(d);
+function berlinDateKeyFromParts(p) {
+  const { y, mo, da } = p;
   if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(da)) return '1970-01-01';
   return `${y}-${pad2(mo)}-${pad2(da)}`;
 }
 
-function getMinuteKeyBerlin(d = new Date()) {
-  const { y, mo, da, h, mi } = getBerlinWallClockParts(d);
+function berlinMinuteKeyFromParts(p) {
+  const { y, mo, da, h, mi } = p;
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(da) || !Number.isFinite(h) || !Number.isFinite(mi)) {
+    return '';
+  }
   return `${y}-${pad2(mo)}-${pad2(da)} ${pad2(h)}:${pad2(mi)}`;
 }
 
@@ -367,7 +372,8 @@ async function tick(log) {
   running = true;
   try {
     const now = new Date();
-    const minuteKey = getMinuteKeyBerlin(now);
+    const berlinParts = getBerlinWallClockParts(now);
+    const minuteKey = berlinMinuteKeyFromParts(berlinParts);
     if (minuteKey === lastMinuteKey) return;
     lastMinuteKey = minuteKey;
 
@@ -386,13 +392,13 @@ async function tick(log) {
     const delaySRaw = Number(keys['hkweb_sicherheit_schliesszeiten_delay_s']);
     const delayS = Number.isFinite(delaySRaw) ? Math.max(5, Math.min(600, delaySRaw)) : 45;
 
-    const berlinDateKey = getBerlinDateKey(now);
+    const berlinDateKey = berlinDateKeyFromParts(berlinParts);
     if (berlinDateKey !== lastBerlinDateKey) {
       sunByPlzDay.clear();
       lastBerlinDateKey = berlinDateKey;
     }
 
-    const timeStr = getBerlinTimeHM(now);
+    const timeStr = berlinTimeHMFromParts(berlinParts);
     const klappeList = Array.isArray(klappenConfig) ? klappenConfig : [];
 
     const daynightPlzSet = new Set();
