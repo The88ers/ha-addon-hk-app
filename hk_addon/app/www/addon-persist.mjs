@@ -39,3 +39,22 @@ export async function fetchAddonLogs(limit = 500) {
   const j = await r.json();
   return Array.isArray(j.lines) ? j.lines : [];
 }
+
+/** Sonnenzeiten über Add-on-Server (Nominatim + sunrise-sunset.org, ohne Browser-CORS). */
+export async function fetchSunTimesForPlz(plz) {
+  const q = new URLSearchParams({ plz: String(plz).trim() });
+  const r = await fetch(addonApi(`/api/addon/sun-times?${q}`), { cache: 'no-store' });
+  let data = {};
+  try {
+    data = await r.json();
+  } catch {
+    /* ignore */
+  }
+  if (!r.ok) {
+    throw new Error(data.error || `HTTP ${r.status}`);
+  }
+  if (!data.ok || !data.sunrise || !data.sunset) {
+    throw new Error(data.error || 'Ungültige Sonnenzeiten-Antwort');
+  }
+  return { sunrise: data.sunrise, sunset: data.sunset };
+}

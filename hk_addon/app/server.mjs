@@ -23,6 +23,10 @@ const PORT =
 const SUPERVISOR_TOKEN = process.env.SUPERVISOR_TOKEN;
 const HA_API = 'http://supervisor/core/api';
 
+/** Nominatim verlangt einen erkennbaren User-Agent (Browser-`fetch` setzt ihn oft nicht / CORS). */
+const NOMINATIM_UA =
+  'HK-Addon/0.2.12 (Home Assistant add-on; https://github.com/The88ers/ha-addon-hk-app)';
+
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
@@ -87,6 +91,89 @@ app.get('/api/addon/logs', (req, res) => {
   }
 });
 
+/**
+ * Sonnenauf-/untergang für eine deutsche PLZ (Server-Proxy: kein CORS, Nominatim-konformer User-Agent).
+ * GET /api/addon/sun-times?plz=12345
+ */
+app.get('/api/addon/sun-times', async (req, res) => {
+  const plz = String(req.query.plz || req.query.postalcode || '').trim();
+  if (plz.length < 5) {
+    res.status(400).json({ ok: false, error: 'PLZ fehlt oder zu kurz (mindestens 5 Zeichen)' });
+    return;
+  }
+  try {
+    const geoUrl = `https://nominatim.openstreetmap.org/search?postalcode=${encodeURIComponent(plz)}&countrycodes=de&format=json&limit=1`;
+    const geoR = await fetch(geoUrl, {
+      headers: {
+        'User-Agent': NOMINATIM_UA,
+        Accept: 'application/json',
+        'Accept-Language': 'de',
+      },
+    });
+    if (!geoR.ok) {
+      const t = await geoR.text();
+      console.error('[api/addon/sun-times] nominatim', geoR.status, t.slice(0, 300));
+      res.status(502).json({ ok: false, error: `Geocoding HTTP ${geoR.status}` });
+      return;
+    }
+    const geoData = await geoR.json();
+    if (!Array.isArray(geoData) || geoData.length === 0) {
+      res.status(404).json({ ok: false, error: 'PLZ nicht gefunden' });
+      return;
+    }
+    const lat = parseFloat(geoData[0].lat);
+    const lon = parseFloat(geoData[0].lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      res.status(502).json({ ok: false, error: 'Ungültige Koordinaten von Nominatim' });
+      return;
+    }
+
+    const sunUrl = `https://api.sunrise-sunset.org/json?lat=${lat}&lng=${lon}&formatted=0`;
+    const sunR = await fetch(sunUrl, { headers: { Accept: 'application/json' } });
+    if (!sunR.ok) {
+      const t = await sunR.text();
+      console.error('[api/addon/sun-times] sunrise-sunset', sunR.status, t.slice(0, 300));
+      res.status(502).json({ ok: false, error: `Sonnenzeiten-API HTTP ${sunR.status}` });
+      return;
+    }
+    const sunData = await sunR.json();
+    if (sunData.status !== 'OK' || !sunData.results) {
+      res.status(502).json({ ok: false, error: 'Sonnenzeiten-API: kein OK' });
+      return;
+    }
+
+    const parseUtc = (iso) => {
+      const s = String(iso || '');
+      if (!s) return null;
+      const d = new Date(/Z|[+-]\d{2}:?\d{2}$/.test(s) ? s : `${s}Z`);
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+    const sunriseUTC = parseUtc(sunData.results.sunrise);
+    const sunsetUTC = parseUtc(sunData.results.sunset);
+    if (!sunriseUTC || !sunsetUTC) {
+      res.status(502).json({ ok: false, error: 'Sonnenzeiten konnten nicht geparst werden' });
+      return;
+    }
+
+    const formatter = new Intl.DateTimeFormat('de-DE', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: 'Europe/Berlin',
+    });
+    res.json({
+      ok: true,
+      plz,
+      sunrise: formatter.format(sunriseUTC),
+      sunset: formatter.format(sunsetUTC),
+      lat,
+      lon,
+    });
+  } catch (e) {
+    console.error('[api/addon/sun-times]', e);
+    res.status(502).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
 /** Proxy: GET /api/ha/states → HA REST */
 app.get('/api/ha/states', async (_req, res) => {
   if (!SUPERVISOR_TOKEN) {
@@ -102,6 +189,25 @@ app.get('/api/ha/states', async (_req, res) => {
     res.status(r.status).type('application/json').send(text);
   } catch (e) {
     console.error('[api/ha/states]', e);
+    res.status(502).json({ error: String(e.message || e) });
+  }
+});
+
+/** Proxy: GET /api/ha/services → HA REST (Service-Registry, u. a. notify.mobile_app_*) */
+app.get('/api/ha/services', async (_req, res) => {
+  if (!SUPERVISOR_TOKEN) {
+    res.status(503).json({ error: 'SUPERVISOR_TOKEN fehlt' });
+    return;
+  }
+  try {
+    const r = await fetch(`${HA_API}/services`, { headers: haHeaders() });
+    const text = await r.text();
+    if (!r.ok) {
+      console.error('[api/ha/services GET] Supervisor:', r.status, text.slice(0, 500));
+    }
+    res.status(r.status).type('application/json').send(text);
+  } catch (e) {
+    console.error('[api/ha/services GET]', e);
     res.status(502).json({ error: String(e.message || e) });
   }
 });

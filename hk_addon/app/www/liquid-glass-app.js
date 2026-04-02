@@ -3,6 +3,7 @@ import {
   loadSettingsFromAddonServer,
   saveSettingsToAddonServer,
   fetchAddonLogs,
+  fetchSunTimesForPlz,
 } from './addon-persist.mjs';
 
 // Vault-Tec Terminal Theme - verwendet system fonts (Courier New, Consolas)
@@ -1241,47 +1242,52 @@ class HKWebApp extends LitElement {
       this.sunsetTime = '';
       return;
     }
-    
+
     try {
-      // Schritt 1: PLZ zu Koordinaten konvertieren (kostenlose API)
-      // Verwende OpenStreetMap Nominatim API (kostenlos, keine API-Key nötig)
-      const geocodeUrl = `https://nominatim.openstreetmap.org/search?postalcode=${this.plz}&countrycodes=de&format=json&limit=1`;
-      
+      // Home-Assistant-Add-on: Nominatim/Sonnen-API über Server (CORS + Nominatim User-Agent).
+      if (typeof window !== 'undefined' && window.__HK_ADDON__) {
+        const { sunrise, sunset } = await fetchSunTimesForPlz(this.plz);
+        this.sunriseTime = sunrise;
+        this.sunsetTime = sunset;
+        this.requestUpdate();
+        this.addLogEntry(`PLZ ${this.plz}: Sonnenaufgang ${this.sunriseTime}, Sonnenuntergang ${this.sunsetTime}`);
+        return;
+      }
+
+      // Eigenständige Web-App: direkter Aufruf (kann je nach Browser/Umgebung scheitern)
+      const geocodeUrl = `https://nominatim.openstreetmap.org/search?postalcode=${encodeURIComponent(this.plz)}&countrycodes=de&format=json&limit=1`;
       const geoResponse = await fetch(geocodeUrl, {
         headers: {
-          'User-Agent': 'HK-Web-App/1.0'
-        }
+          'User-Agent': 'HK-Web-App/1.0 (https://github.com/The88ers/ha-addon-hk-app)',
+        },
       });
-      
+
       if (!geoResponse.ok) throw new Error('Geocoding fehlgeschlagen');
-      
+
       const geoData = await geoResponse.json();
-      
+
       if (!geoData || geoData.length === 0) {
         throw new Error('PLZ nicht gefunden');
       }
-      
+
       const lat = parseFloat(geoData[0].lat);
       const lon = parseFloat(geoData[0].lon);
-      
-      // Schritt 2: Sonnenauf-/untergang abrufen
+
       const sunResponse = await fetch(`https://api.sunrise-sunset.org/json?lat=${lat}&lng=${lon}&formatted=0`);
       const sunData = await sunResponse.json();
-      
+
       if (sunData.status === 'OK') {
-        // Die API gibt UTC-Zeiten zurück (ISO 8601 Format)
-        // Parse als UTC und konvertiere zu lokaler Zeit (Europe/Berlin)
-        const sunriseUTC = new Date(sunData.results.sunrise + 'Z'); // Z = UTC
-        const sunsetUTC = new Date(sunData.results.sunset + 'Z');
-        
-        // Konvertiere zu lokaler Zeit (Deutschland)
-        // Verwende Intl.DateTimeFormat für korrekte Zeitzonen-Konvertierung
+        const rawSr = sunData.results.sunrise;
+        const rawSs = sunData.results.sunset;
+        const sunriseUTC = new Date(/Z|[+-]\d{2}:?\d{2}$/.test(String(rawSr)) ? rawSr : `${rawSr}Z`);
+        const sunsetUTC = new Date(/Z|[+-]\d{2}:?\d{2}$/.test(String(rawSs)) ? rawSs : `${rawSs}Z`);
+
         const formatter = new Intl.DateTimeFormat('de-DE', {
           hour: '2-digit',
           minute: '2-digit',
-          timeZone: 'Europe/Berlin'
+          timeZone: 'Europe/Berlin',
         });
-        
+
         this.sunriseTime = formatter.format(sunriseUTC);
         this.sunsetTime = formatter.format(sunsetUTC);
         this.requestUpdate();
@@ -4394,6 +4400,21 @@ class HKWebApp extends LitElement {
         border-color: #007aff;
         box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
       }
+
+      /* Native <select>: im Dark-Mode ist --liq-text hell; OS/Option-Liste oft hell → Text unleserlich */
+      .modus-select,
+      .offset-select,
+      .notify-service-select {
+        color: #141414;
+        background-color: #ececf0;
+      }
+      .modus-select option,
+      .offset-select option,
+      .notify-service-select option {
+        color: #141414;
+        background-color: #ffffff;
+      }
+
       .notify-targets-list {
         list-style: none;
         margin: 0 0 12px 0;
