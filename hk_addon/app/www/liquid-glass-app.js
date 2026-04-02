@@ -71,6 +71,8 @@ class HKWebApp extends LitElement {
       addonLogLines: { type: Array },
       /** Persistiert (hkweb_notes → /data über buildSettingsSnapshot) */
       userNotes: { type: String },
+      /** Entwurf für manuelles Hinzufügen eines Notify-Ziels (Sicherheit) */
+      safetyNotifyManualDraft: { type: String },
     };
   }
 
@@ -99,6 +101,7 @@ class HKWebApp extends LitElement {
     this.logPanelTab = 'app';
     this.addonLogLines = [];
     this.userNotes = localStorage.getItem('hkweb_notes') || '';
+    this.safetyNotifyManualDraft = '';
     this._persistTimer = null;
     this._suppressPersist = false;
     this._addonLogPollTimer = null;
@@ -641,7 +644,7 @@ class HKWebApp extends LitElement {
     return this.klappenConfig;
   }
 
-  updateKlappenConfig(klappeId, field, value) {
+  updateKlappenConfig(klappeId, field, value, silent = false) {
     if (!this.klappenConfig) {
       this.klappenConfig = this.getKlappenConfig();
     }
@@ -650,13 +653,80 @@ class HKWebApp extends LitElement {
       klappe[field] = value;
       this.saveKlappenConfig(this.klappenConfig);
       this.requestUpdate();
-      this.addLogEntry(`Klappe ${klappeId}: ${field} geändert zu ${value}`);
+      if (!silent) {
+        this.addLogEntry(`Klappe ${klappeId}: ${field} geändert zu ${value}`);
+      }
     }
   }
 
   checkEntityExists(entityId) {
     if (!entityId || !this.hass || !this.hass.states) return false;
     return this.hass.states.hasOwnProperty(entityId);
+  }
+
+  /**
+   * Prüft, ob notify.<suffix> als Dienst existiert (Companion App).
+   * @returns {boolean|null} true/false oder null wenn leer / keine Service-Daten
+   */
+  checkNotifyServiceSuffix(suffix) {
+    const s = suffix != null ? String(suffix).trim() : '';
+    if (!s) return null;
+    if (!this.hass?.services?.notify) return null;
+    return Object.prototype.hasOwnProperty.call(this.hass.services.notify, s);
+  }
+
+  /** Alle notify.*-Dienstnamen, die mit mobile_app_ beginnen (Companion App). */
+  getMobileAppNotifyServices() {
+    const n = this.hass?.services?.notify;
+    if (!n || typeof n !== 'object') return [];
+    return Object.keys(n)
+      .filter((k) => typeof k === 'string' && k.startsWith('mobile_app_'))
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }
+
+  /** Konfigurierte Notify-Ziele (ohne Präfix notify.); Legacy: einzelner localStorage-Suffix. */
+  getSafetyNotifyTargets() {
+    const raw = localStorage.getItem('hkweb_sicherheit_schliesszeiten_notify_targets');
+    if (raw != null && String(raw).trim() !== '') {
+      try {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          return [...new Set(arr.map((s) => String(s).trim()).filter(Boolean))];
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    const legacy = (localStorage.getItem('hkweb_sicherheit_schliesszeiten_notify_suffix') || '').trim();
+    return legacy ? [legacy] : [];
+  }
+
+  setSafetyNotifyTargets(targets) {
+    const clean = [...new Set((targets || []).map((s) => String(s).trim()).filter(Boolean))];
+    localStorage.setItem('hkweb_sicherheit_schliesszeiten_notify_targets', JSON.stringify(clean));
+    localStorage.setItem('hkweb_sicherheit_schliesszeiten_notify_suffix', clean[0] || '');
+    this._schedulePersistToData();
+    this.requestUpdate();
+  }
+
+  addSafetyNotifyTarget(suffix) {
+    const t = String(suffix || '').trim();
+    if (!t) return;
+    const cur = this.getSafetyNotifyTargets();
+    if (cur.includes(t)) return;
+    this.setSafetyNotifyTargets([...cur, t]);
+  }
+
+  removeSafetyNotifyTarget(suffix) {
+    this.setSafetyNotifyTargets(this.getSafetyNotifyTargets().filter((x) => x !== suffix));
+  }
+
+  _addSafetyNotifyManualFromDraft() {
+    const t = String(this.safetyNotifyManualDraft || '').trim();
+    if (!t) return;
+    this.addSafetyNotifyTarget(t);
+    this.safetyNotifyManualDraft = '';
+    this.requestUpdate();
   }
 
   /** Felder und Labels für Entity-Prüfung / Auto-Reparatur (eine Quelle). */
@@ -1346,14 +1416,14 @@ class HKWebApp extends LitElement {
       const modeEnabled = Boolean(modusData?.[currentMode]?.sicherheitsschliessen === true);
       if (!modeEnabled) return;
 
-      const notifySuffix = localStorage.getItem('hkweb_sicherheit_schliesszeiten_notify_suffix') || '';
+      const notifyTargets = this.getSafetyNotifyTargets();
       const delaySRaw = Number(localStorage.getItem('hkweb_sicherheit_schliesszeiten_delay_s'));
       const delayS = Number.isFinite(delaySRaw) ? Math.max(5, Math.min(600, delaySRaw)) : 45;
-      if (!notifySuffix) return;
+      if (!notifyTargets.length) return;
 
       const seconds = delayS;
       setTimeout(() => {
-        this._checkManualSafetyAndNotify({ klappe, direction, notifySuffix }).catch((e) => {
+        this._checkManualSafetyAndNotify({ klappe, direction, notifyTargets }).catch((e) => {
           this.addLogEntry(`✗ Manual Safety-Check Fehler: ${String(e?.message || e)}`);
         });
       }, seconds * 1000);
@@ -1363,7 +1433,7 @@ class HKWebApp extends LitElement {
     }
   }
 
-  async _checkManualSafetyAndNotify({ klappe, direction, notifySuffix }) {
+  async _checkManualSafetyAndNotify({ klappe, direction, notifyTargets }) {
     const kid = klappe?.id ? String(klappe.id) : '';
     const name = klappe?.name && String(klappe.name).trim() ? String(klappe.name).trim() : kid;
 
@@ -1413,7 +1483,10 @@ class HKWebApp extends LitElement {
     const dirText = direction === 'open' ? 'Öffnen' : 'Schließen';
     const message = `${msgPrefix}: ${dirText} der Klappe ${name} fehlgeschlagen`;
 
-    await this.hass.callService('notify', notifySuffix, { title: 'HK Sicherheit', message });
+    const list = Array.isArray(notifyTargets) ? notifyTargets : [];
+    for (const t of list) {
+      await this.hass.callService('notify', t, { title: 'HK Sicherheit', message });
+    }
   }
 
   _setNumberValue(entityId, value) {
@@ -2481,6 +2554,7 @@ class HKWebApp extends LitElement {
             class="entity-input ${isValid === false ? 'entity-invalid' : isValid === true ? 'entity-valid' : ''}"
             .value="${value || ''}"
             placeholder="z. B. sensor.hk1_status_hk1 / button.hk1_hk1_offnen"
+            @input=${e => this.updateKlappenConfig(klappeId, field, e.target.value, true)}
             @change=${e => this.updateKlappenConfig(klappeId, field, e.target.value)}
           />
           ${isValid === true ? html`
@@ -2642,7 +2716,9 @@ class HKWebApp extends LitElement {
 
   renderSicherheit() {
     const warnEnabled = localStorage.getItem('hkweb_sicherheit_schliesszeiten_warn_enabled') === 'true';
-    const notifySuffix = localStorage.getItem('hkweb_sicherheit_schliesszeiten_notify_suffix') || '';
+    const notifyTargets = this.getSafetyNotifyTargets();
+    const mobileNotifyServices = this.getMobileAppNotifyServices();
+    const mobileNotifyServicesToAdd = mobileNotifyServices.filter((id) => !notifyTargets.includes(id));
     const delayS = Number(localStorage.getItem('hkweb_sicherheit_schliesszeiten_delay_s'));
     const effectiveDelayS = Number.isFinite(delayS) ? Math.max(5, Math.min(600, delayS)) : 45;
     const klappen = this.getKlappenConfig();
@@ -2675,34 +2751,126 @@ class HKWebApp extends LitElement {
           </div>
 
           <div class="settings-section" style="margin-top:12px">
-            <label class="entity-label" style="margin-bottom:6px">iOS Notify Service (ohne „notify.“)</label>
-            <input
-              type="text"
-              class="entity-input"
-              style="width:100%"
-              .value=${notifySuffix}
-              placeholder="z. B. mobile_app_iphone_mein_gerat"
+            <label class="entity-label" style="margin-bottom:6px">iOS Notify-Empfänger (mehrere möglich)</label>
+            <p class="info-text" style="margin:0 0 8px 0">
+              Ohne Präfix <code>notify.</code>: je Eintrag <code>mobile_app_<strong>Name</strong></code>
+              (<strong>Name</strong> = Gerätename der Companion App). In HA:
+              <code>notify.mobile_app_<strong>Name</strong></code>. Alle Einträge erhalten dieselbe Sicherheitsmeldung.
+            </p>
+            ${notifyTargets.length
+              ? html`
+                  <ul class="notify-targets-list" aria-label="Konfigurierte Notify-Ziele">
+                    ${notifyTargets.map((id) => {
+                      const v = this.checkNotifyServiceSuffix(id);
+                      return html`
+                        <li class="notify-target-chip">
+                          <code class="notify-target-chip__id">notify.${id}</code>
+                          ${v === true
+                            ? html`<span class="entity-status-icon entity-valid-icon" title="Dienst gefunden"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg></span>`
+                            : v === false
+                              ? html`<span class="entity-status-icon entity-invalid-icon" title="Dienst nicht gefunden"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg></span>`
+                              : html`<span class="entity-status-icon entity-unknown-icon" title="Dienste nicht geladen"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></span>`}
+                          <button
+                            type="button"
+                            class="notify-target-chip__remove"
+                            title="Aus Liste entfernen"
+                            aria-label=${`Entfernen: ${id}`}
+                            @click=${() => this.removeSafetyNotifyTarget(id)}
+                          >
+                            ×
+                          </button>
+                        </li>
+                      `;
+                    })}
+                  </ul>
+                `
+              : html`<p class="info-text notify-targets-empty">Noch keine Empfänger — unten hinzufügen.</p>`}
+            <label class="entity-label notify-dropdown-label">Aus Home Assistant hinzufügen</label>
+            <select
+              class="notify-service-select"
+              .value=${''}
               @change=${(e) => {
-                localStorage.setItem('hkweb_sicherheit_schliesszeiten_notify_suffix', e.target.value || '');
-                this._schedulePersistToData();
-                this.requestUpdate();
+                const v = e.target.value;
+                if (v) {
+                  this.addSafetyNotifyTarget(v);
+                  e.target.value = '';
+                }
               }}
-            />
+            >
+              <option value="">
+                ${mobileNotifyServicesToAdd.length
+                  ? '— Gerät zur Liste wählen —'
+                  : mobileNotifyServices.length
+                    ? '— Alle gelisteten Geräte bereits eingetragen —'
+                    : '— Keine mobile_app_-Dienste geladen —'}
+              </option>
+              ${mobileNotifyServicesToAdd.map(
+                (id) => html`<option value=${id}>notify.${id}</option>`,
+              )}
+            </select>
+            <label class="entity-label notify-manual-label">Manuell hinzufügen</label>
+            <div class="notify-add-manual-row">
+              <div class="entity-input-wrapper notify-add-manual-input-wrap">
+                <input
+                  type="text"
+                  class="entity-input ${(() => {
+                    const d = this.safetyNotifyManualDraft || '';
+                    if (!d.trim()) return '';
+                    const vv = this.checkNotifyServiceSuffix(d);
+                    return vv === false ? 'entity-invalid' : vv === true ? 'entity-valid' : '';
+                  })()}"
+                  .value=${this.safetyNotifyManualDraft}
+                  placeholder="z. B. mobile_app_iphone_mein_gerat"
+                  @input=${(e) => {
+                    this.safetyNotifyManualDraft = e.target.value;
+                    this.requestUpdate();
+                  }}
+                  @keydown=${(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      this._addSafetyNotifyManualFromDraft();
+                    }
+                  }}
+                />
+                ${(() => {
+                  const d = (this.safetyNotifyManualDraft || '').trim();
+                  if (!d) return '';
+                  const vv = this.checkNotifyServiceSuffix(d);
+                  return vv === true
+                    ? html`<span class="entity-status-icon entity-valid-icon" title="Notify-Dienst gefunden"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg></span>`
+                    : vv === false
+                      ? html`<span class="entity-status-icon entity-invalid-icon" title="Notify-Dienst nicht gefunden"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg></span>`
+                      : html`<span class="entity-status-icon entity-unknown-icon" title="Dienste noch nicht geladen"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg></span>`;
+                })()}
+              </div>
+              <button type="button" class="notify-add-manual-btn" @click=${() => this._addSafetyNotifyManualFromDraft()}>
+                Hinzufügen
+              </button>
+            </div>
           </div>
 
-          <div class="settings-section" style="margin-top:12px">
+          <div class="settings-section settings-section--test-ios" style="margin-top:16px">
             <button
               type="button"
-              class="glass-btn schedule-sync-btn"
+              class="hk-test-ios-notify-btn"
               @click=${() => this._testSafetyNotification()}
-              title="Sendet eine Test-Notification an die iOS-App"
+              title="Sendet eine Test-Benachrichtigung an alle konfigurierten iOS-Empfänger"
             >
-              Testnachricht an iOS senden
+              <span class="hk-test-ios-notify-btn__icon" aria-hidden="true">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                </svg>
+              </span>
+              <span class="hk-test-ios-notify-btn__text">Testnachricht an iOS senden</span>
             </button>
           </div>
 
           <div class="settings-section" style="margin-top:12px">
-            <label class="entity-label" style="margin-bottom:6px">Prüfzeit (Sekunden nach Öffnen/Schließen)</label>
+            <label class="entity-label" style="margin-bottom:6px">Prüfzeit (Sekunden)</label>
+            <div class="info-text" style="margin:0 0 8px 0">
+              Wartezeit bis zur Prüfung nach geplantem Öffnen/Schließen (Zeitpläne) und <strong>nach dem einmaligen erneuten Schließen</strong> bei Sicherheitsschließzeiten (Add-on-Scheduler).
+            </div>
             <input
               type="number"
               class="entity-input"
@@ -2778,7 +2946,9 @@ class HKWebApp extends LitElement {
                   </button>
                 </div>
                 <div class="info-text">
-                  Wenn die Zeit erreicht ist (und im aktuellen Modus „Sicherheitsschließzeiten anwenden“ aktiv ist), wird geprüft, ob die Klappe wirklich geschlossen ist.
+                  Zur eingestellten Zeit prüft der Add-on-Scheduler (mit Verzögerung „Prüfzeit“ oben), ob die Klappe geschlossen ist.
+                  Ist sie das nicht, wird <strong>einmal</strong> der Schließen-Button aus dem Setup ausgelöst; nach derselben Prüfzeit erfolgt eine zweite Prüfung.
+                  Über das Ergebnis (jetzt geschlossen / weiterhin offen / Button fehlt oder Fehler) wird per Notify informiert, sofern Empfänger konfiguriert sind.
                 </div>
               </div>
             </div>
@@ -2794,16 +2964,23 @@ class HKWebApp extends LitElement {
         this.addLogEntry('Test-Notification: keine HA-Verbindung (callService fehlt).');
         return;
       }
-      const notifySuffix = localStorage.getItem('hkweb_sicherheit_schliesszeiten_notify_suffix') || '';
-      if (!notifySuffix) {
-        this.addLogEntry('Test-Notification: iOS Notify Service ist leer.');
+      const targets = this.getSafetyNotifyTargets();
+      if (!targets.length) {
+        this.addLogEntry('Test-Notification: keine Notify-Empfänger konfiguriert.');
         return;
       }
-      await this.hass.callService('notify', notifySuffix, {
+      const payload = {
         title: 'HK Sicherheit',
         message: 'Test: iOS Notification funktioniert.',
-      });
-      this.addLogEntry(`✓ Test-Notification gesendet → notify.${notifySuffix}`);
+      };
+      for (const t of targets) {
+        try {
+          await this.hass.callService('notify', t, payload);
+          this.addLogEntry(`✓ Test gesendet → notify.${t}`);
+        } catch (err) {
+          this.addLogEntry(`✗ Test fehlgeschlagen (notify.${t}): ${String(err?.message || err)}`);
+        }
+      }
     } catch (e) {
       this.addLogEntry(`✗ Test-Notification fehlgeschlagen: ${String(e?.message || e)}`);
       console.error('[TestSafetyNotification]', e);
@@ -4185,6 +4362,155 @@ class HKWebApp extends LitElement {
       }
       .schedule-sync-btn {
         margin-top: 10px;
+      }
+      .notify-dropdown-label,
+      .notify-manual-label {
+        display: block;
+        margin-top: 10px;
+        margin-bottom: 6px;
+        font-size: 0.92rem;
+      }
+      .notify-manual-label {
+        margin-top: 14px;
+      }
+      .notify-service-select {
+        width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
+        font-size: 0.95rem;
+        font-family: 'Courier New', monospace;
+        padding: 10px 12px;
+        border: 1.5px solid rgba(255, 255, 255, 0.35);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.4);
+        color: var(--liq-text, #2a2e3a);
+        outline: none;
+        box-shadow: 0 2px 8px rgba(31, 38, 135, 0.08);
+        cursor: pointer;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+      }
+      .notify-service-select:focus {
+        border-color: #007aff;
+        box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
+      }
+      .notify-targets-list {
+        list-style: none;
+        margin: 0 0 12px 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .notify-target-chip {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.35);
+        border: 1px solid rgba(255, 255, 255, 0.4);
+      }
+      .notify-target-chip__id {
+        flex: 1;
+        min-width: 0;
+        font-size: 0.88rem;
+        word-break: break-all;
+        margin: 0;
+        color: var(--liq-text, #2a2e3a);
+      }
+      .notify-target-chip__remove {
+        flex-shrink: 0;
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        border: none;
+        border-radius: 10px;
+        background: rgba(255, 59, 48, 0.15);
+        color: #ff3b30;
+        font-size: 1.35rem;
+        line-height: 1;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .notify-target-chip__remove:hover {
+        background: rgba(255, 59, 48, 0.28);
+      }
+      .notify-targets-empty {
+        margin: 0 0 12px 0;
+        opacity: 0.85;
+      }
+      .notify-add-manual-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: stretch;
+        gap: 10px;
+        width: 100%;
+      }
+      .notify-add-manual-input-wrap {
+        flex: 1;
+        min-width: 180px;
+      }
+      .notify-add-manual-btn {
+        flex-shrink: 0;
+        align-self: center;
+        padding: 10px 18px;
+        font-size: 0.95rem;
+        font-weight: 600;
+        border-radius: 12px;
+        border: 1.5px solid rgba(0, 122, 255, 0.45);
+        background: rgba(0, 122, 255, 0.12);
+        color: var(--liq-text, #2a2e3a);
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .notify-add-manual-btn:hover {
+        background: rgba(0, 122, 255, 0.22);
+        border-color: rgba(0, 122, 255, 0.65);
+      }
+      .settings-section--test-ios {
+        padding-top: 4px;
+      }
+      .hk-test-ios-notify-btn {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        width: 100%;
+        max-width: 100%;
+        min-height: 52px;
+        padding: 14px 20px;
+        margin: 0;
+        border: 2px solid rgba(0, 122, 255, 0.5);
+        border-radius: 14px;
+        background: linear-gradient(180deg, rgba(0, 122, 255, 0.18) 0%, rgba(0, 122, 255, 0.08) 100%);
+        color: var(--liq-text, #1a1d26);
+        font-size: 1.02rem;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        line-height: 1.3;
+        box-shadow: 0 4px 14px rgba(0, 122, 255, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+        cursor: pointer;
+        transition: background 0.2s, border-color 0.2s, transform 0.12s ease, box-shadow 0.2s;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .hk-test-ios-notify-btn:hover {
+        background: linear-gradient(180deg, rgba(0, 122, 255, 0.28) 0%, rgba(0, 122, 255, 0.14) 100%);
+        border-color: rgba(0, 122, 255, 0.75);
+        box-shadow: 0 6px 18px rgba(0, 122, 255, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+      }
+      .hk-test-ios-notify-btn:active {
+        transform: scale(0.98);
+      }
+      .hk-test-ios-notify-btn__icon {
+        display: flex;
+        flex-shrink: 0;
+        color: #007aff;
+      }
+      .hk-test-ios-notify-btn__text {
+        text-align: center;
       }
       .setup-container {
         margin-top: 0;
