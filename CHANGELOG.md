@@ -3,6 +3,13 @@
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/).  
 Die **Versionsnummer** entspricht `version` in `hk_addon/config.yaml` (Quelle für Home Assistant).
 
+## [0.2.8] – 2026-04-02
+
+### Added
+- **Add-on-Scheduler:** führt Zeitpläne im Add-on selbst aus (basierend auf der UI-Konfiguration in `/data/hkweb-settings.json`).
+- **Sicherheit:** „Schließzeiten“ mit iOS-Notification (Nabu Casa / Companion) bei Fehlschlag.
+- **Sicherheit (Modi):** Checkbox „Sicherheitsschließzeiten anwenden“ ist in allen Modi verfügbar und löst zusätzliche Prüfungen aus (inkl. Notification).
+- **Sicherheitstests:** Button zum manuellen Senden einer Testnachricht an das iOS-Handy.
 ## [0.2.7] – 2026-03-30
 
 ### Changed
@@ -57,6 +64,7 @@ Die **Versionsnummer** entspricht `version` in `hk_addon/config.yaml` (Quelle f�
 - Erstes Add-on-Gerüst: `hk_addon` mit Ingress, Node-Server, REST-Proxy zur HA-API (`SUPERVISOR_TOKEN`), Scheduler-Stub, Platzhalter-UI.
 - `repository.yaml`, Übersetzungen (`translations/`), `apparmor.txt`, Watchdog-URL, Doku für Installation über GitHub.
 
+[0.2.8]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.2.8
 [0.2.7]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.2.7
 [0.2.6]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.2.6
 [0.2.5]: https://github.com/The88ers/ha-addon-hk-app/releases/tag/v0.2.5

@@ -1051,9 +1051,22 @@ class HKWebApp extends LitElement {
         // Stelle sicher, dass alle aktuellen Klappen vorhanden sind
         const klappen = this.getKlappenConfig();
         klappen.forEach(k => {
-          if (!this.klappenModi[k.id]) {
+          const cur = this.klappenModi[k.id];
+          if (!cur) {
             this.klappenModi[k.id] = this.createDefaultModusConfig();
+            return;
           }
+
+          // Merge: Neue Felder (Checkbox/Zeiten) ergänzen, vorhandene Arrays/Values behalten.
+          const def = this.createDefaultModusConfig();
+          this.klappenModi[k.id] = {
+            ...def,
+            ...cur,
+            schedule: { ...def.schedule, ...(cur.schedule || {}) },
+            daynight: { ...def.daynight, ...(cur.daynight || {}) },
+            sicherheit: { ...def.sicherheit, ...(cur.sicherheit || {}) },
+            manual: { ...def.manual, ...(cur.manual || {}) },
+          };
         });
         this.saveModi();
       } catch (e) {
@@ -1080,16 +1093,24 @@ class HKWebApp extends LitElement {
       modus: 'manual', // Standard: Manuell
       schedule: {
         oeffnenZeiten: [],
-        schliessenZeiten: []
+        schliessenZeiten: [],
+        // Sicherheits-Checks nach jedem Open/Close-Befehl im jeweiligen Modus
+        sicherheitsschliessen: false,
       },
       daynight: {
         plz: this.plz || '',
         offsetOeffnen: 0, // Minuten vor/nach Sonnenaufgang
-        offsetSchliessen: 0 // Minuten vor/nach Sonnenuntergang
+        offsetSchliessen: 0, // Minuten vor/nach Sonnenuntergang
+        // Sicherheits-Checks nach jedem Open/Close-Befehl im jeweiligen Modus
+        sicherheitsschliessen: false,
+      },
+      // Sicherheits-Zeiten pro Klappe: zu diesen Uhrzeiten prüfen wir "Klappe zu".
+      sicherheit: {
+        schliessenZeiten: [],
       },
       manual: {
-        sicherheitsschliessen: false
-      }
+        sicherheitsschliessen: false,
+      },
     };
   }
 
@@ -1124,11 +1145,14 @@ class HKWebApp extends LitElement {
     if (!this.klappenModi[klappeId]) {
       this.klappenModi[klappeId] = this.createDefaultModusConfig();
     }
+    if (!this.klappenModi[klappeId].sicherheit) {
+      this.klappenModi[klappeId].sicherheit = { schliessenZeiten: [] };
+    }
     if (!this.klappenModi[klappeId][modusType]) {
       this.klappenModi[klappeId][modusType] = modusType === 'schedule' 
-        ? { oeffnenZeiten: [], schliessenZeiten: [] }
+        ? { oeffnenZeiten: [], schliessenZeiten: [], sicherheitsschliessen: false }
         : modusType === 'daynight'
-        ? { plz: this.plz || '', offsetOeffnen: 0, offsetSchliessen: 0 }
+        ? { plz: this.plz || '', offsetOeffnen: 0, offsetSchliessen: 0, sicherheitsschliessen: false }
         : { sicherheitsschliessen: false };
     }
     if (typeof key === 'object') {
@@ -1272,7 +1296,7 @@ class HKWebApp extends LitElement {
     this.activeTab = tab;
   }
 
-  _callButtonService(entityId) {
+  _callButtonService(entityId, safetyCtx = null) {
     if (!entityId || !this.hass?.callService) {
       this.addLogEntry(`Fehler: Button-Entity fehlt oder keine HA-Verbindung`);
       return;
@@ -1293,12 +1317,103 @@ class HKWebApp extends LitElement {
       .then(() => {
         this.addLogEntry(`✓ Button gedrückt: ${entityId}`);
         console.log(`[Button] Erfolg: ${entityId}`);
+
+        // 2. Warnlogik: Bei manuellen Aktionen, wenn in den Modi
+        // „Sicherheitsschließzeiten anwenden“ aktiv ist, nach Prüfzeit prüfen
+        // und bei Fehlschlag eine zweite Notification senden.
+        if (
+          safetyCtx?.klappe &&
+          (safetyCtx.direction === 'open' || safetyCtx.direction === 'close')
+        ) {
+          this._maybeScheduleManualSafetyWarning(safetyCtx.klappe, safetyCtx.direction);
+        }
       })
       .catch((err) => {
         const msg = err?.message || err?.body?.message || String(err);
         this.addLogEntry(`✗ Fehler bei Button: ${entityId} – ${msg}`);
         console.error(`[Button] Fehler bei ${entityId}:`, err);
       });
+
+    return promise;
+  }
+
+  _maybeScheduleManualSafetyWarning(klappe, direction) {
+    try {
+      const kid = klappe?.id ? String(klappe.id) : '';
+      if (!kid) return;
+      const modusData = this.getKlappenModus(kid);
+      const currentMode = modusData?.modus || 'manual';
+      const modeEnabled = Boolean(modusData?.[currentMode]?.sicherheitsschliessen === true);
+      if (!modeEnabled) return;
+
+      const notifySuffix = localStorage.getItem('hkweb_sicherheit_schliesszeiten_notify_suffix') || '';
+      const delaySRaw = Number(localStorage.getItem('hkweb_sicherheit_schliesszeiten_delay_s'));
+      const delayS = Number.isFinite(delaySRaw) ? Math.max(5, Math.min(600, delaySRaw)) : 45;
+      if (!notifySuffix) return;
+
+      const seconds = delayS;
+      setTimeout(() => {
+        this._checkManualSafetyAndNotify({ klappe, direction, notifySuffix }).catch((e) => {
+          this.addLogEntry(`✗ Manual Safety-Check Fehler: ${String(e?.message || e)}`);
+        });
+      }, seconds * 1000);
+    } catch (e) {
+      // Safety-Checks sollen die UI nicht blockieren.
+      console.error('[manual safety]', e);
+    }
+  }
+
+  async _checkManualSafetyAndNotify({ klappe, direction, notifySuffix }) {
+    const kid = klappe?.id ? String(klappe.id) : '';
+    const name = klappe?.name && String(klappe.name).trim() ? String(klappe.name).trim() : kid;
+
+    const states = this.hass?.states || {};
+    const endstopObenEntity = klappe?.endstopObenEntity || '';
+    const endstopUntenEntity = klappe?.endstopUntenEntity || '';
+    const statusEntity = klappe?.statusEntity || '';
+    const zustandEntity = klappe?.zustandEntity || '';
+
+    const getState = (entityId) => {
+      if (!entityId) return null;
+      return states[entityId]?.state ?? null;
+    };
+
+    const endstopObenState = getState(endstopObenEntity);
+    const endstopUntenState = getState(endstopUntenEntity);
+    const statusState = getState(statusEntity);
+    const zustandState = getState(zustandEntity);
+
+    const statusLower = String(statusState ?? '').toLowerCase();
+    const zustandLower = String(zustandState ?? '').toLowerCase();
+
+    const expectedOpen = 'offen';
+    const expectedClose = 'geschlossen';
+
+    let endstopObenOk = true;
+    let endstopUntenOk = true;
+    let statusOk = true;
+    let zustandOk = true;
+
+    if (direction === 'open') {
+      endstopObenOk = endstopObenEntity ? endstopObenState === 'Aktiv' : true;
+      endstopUntenOk = endstopUntenEntity ? endstopUntenState === 'Inaktiv' : true;
+      statusOk = statusEntity ? statusLower.includes(expectedOpen) : true;
+      zustandOk = zustandEntity ? zustandLower.includes(expectedOpen) : true;
+    } else {
+      endstopObenOk = endstopObenEntity ? endstopObenState === 'Inaktiv' : true;
+      endstopUntenOk = endstopUntenEntity ? endstopUntenState === 'Aktiv' : true;
+      statusOk = statusEntity ? statusLower.includes(expectedClose) : true;
+      zustandOk = zustandEntity ? zustandLower.includes(expectedClose) : true;
+    }
+
+    const ok = endstopObenOk && endstopUntenOk && statusOk && zustandOk;
+    if (ok) return;
+
+    const msgPrefix = 'Sicherheitsschließzeiten';
+    const dirText = direction === 'open' ? 'Öffnen' : 'Schließen';
+    const message = `${msgPrefix}: ${dirText} der Klappe ${name} fehlgeschlagen`;
+
+    await this.hass.callService('notify', notifySuffix, { title: 'HK Sicherheit', message });
   }
 
   _setNumberValue(entityId, value) {
@@ -1464,7 +1579,108 @@ class HKWebApp extends LitElement {
     localStorage.setItem('hkweb_notes', v);
     this._schedulePersistToData();
   }
+  toggleKlappenCardExtra(klappeId) {
+    const cur = !!(this.klappenExtraInfoOpen && this.klappenExtraInfoOpen[klappeId]);
+    this.klappenExtraInfoOpen = { ...this.klappenExtraInfoOpen, [klappeId]: !cur };
+  }
 
+  _driveHintKey(statusClass) {
+    if (statusClass === 'geschlossen') return 'closed';
+    if (statusClass === 'offen') return 'open';
+    if (statusClass === 'in-bewegung') return 'moving';
+    if (statusClass === 'stoerung') return 'alarm';
+    return 'unknown';
+  }
+
+  _onDrivePointerDown(e, k) {
+    if (!k.buttonOeffnen && !k.buttonSchliessen && !k.buttonStop) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    const el = e.currentTarget;
+    this._driveDrag = {
+      klappeId: k.id,
+      startY: e.clientY,
+      startX: e.clientX,
+      pointerId: e.pointerId,
+    };
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch (_) {}
+  }
+
+  _onDrivePointerMove(e, k) {
+    if (!this._driveDrag || this._driveDrag.klappeId !== k.id || this._driveDrag.pointerId !== e.pointerId) {
+      return;
+    }
+    e.preventDefault();
+  }
+
+  _onDrivePointerUp(e, k) {
+    if (!this._driveDrag || this._driveDrag.klappeId !== k.id || this._driveDrag.pointerId !== e.pointerId) {
+      return;
+    }
+    const d = this._driveDrag;
+    this._driveDrag = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch (_) {}
+
+    const dy = e.clientY - d.startY;
+    const dx = e.clientX - d.startX;
+    const dist = Math.hypot(dx, dy);
+    const TAP = 14;
+    const SWIPE = 36;
+    if (dist < TAP) {
+      if (k.buttonStop) {
+        this._callButtonService(k.buttonStop, { klappe: k, direction: 'stop' });
+      }
+      return;
+    }
+    if (Math.abs(dy) >= Math.abs(dx)) {
+      if (dy < -SWIPE && k.buttonOeffnen) {
+        this._callButtonService(k.buttonOeffnen, { klappe: k, direction: 'open' });
+      } else if (dy > SWIPE && k.buttonSchliessen) {
+        this._callButtonService(k.buttonSchliessen, { klappe: k, direction: 'close' });
+      }
+    }
+  }
+
+  _onDrivePointerCancel(e, k) {
+    if (this._driveDrag?.klappeId === k.id && this._driveDrag?.pointerId === e.pointerId) {
+      this._driveDrag = null;
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch (_) {}
+    }
+  }
+
+  renderKlappenDriveSlider(k, statusClass) {
+    if (!k.buttonOeffnen && !k.buttonSchliessen && !k.buttonStop) return html``;
+    const hint = this._driveHintKey(statusClass);
+    return html`
+      <div class="klappen-drive-wrap">
+        <div
+          class="klappen-drive-slider hint-${hint}"
+          @pointerdown=${(e) => this._onDrivePointerDown(e, k)}
+          @pointermove=${(e) => this._onDrivePointerMove(e, k)}
+          @pointerup=${(e) => this._onDrivePointerUp(e, k)}
+          @pointercancel=${(e) => this._onDrivePointerCancel(e, k)}
+        >
+          <div class="klappen-drive-arrows" aria-hidden="true">
+            <svg class="klappen-drive-arrow klappen-drive-arrow--up" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 4L4 14h16L12 4z" />
+            </svg>
+            <svg class="klappen-drive-arrow klappen-drive-arrow--down" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 20l8-10H4l8 10z" />
+            </svg>
+          </div>
+          <div class="klappen-drive-hint-text">
+            Ziehen: oben öffnen · unten schließen · kurz tippen: Stop
+          </div>
+        </div>
+      </div>
+    `;
+  }
   renderSidebar() {
     const tabs = [
       { id: 'klappen', label: 'Klappen', icon: this.icon('tabler:layout-grid') },
@@ -1960,10 +2176,23 @@ class HKWebApp extends LitElement {
             }}>+ Schließzeit hinzufügen</button>
           </div>
         </div>
+        <div class="settings-section">
+          <label class="checkbox-label-large">
+            <input
+              type="checkbox"
+              .checked=${scheduleData.sicherheitsschliessen || false}
+              @change=${e => this.updateKlappenModusEinstellung(klappeId, 'schedule', 'sicherheitsschliessen', e.target.checked)}
+            />
+            <span>Sicherheitsschließzeiten anwenden</span>
+          </label>
+          <div class="info-text">
+            Aktiviert Sicherheitsprüfungen inkl. Endschalter-/Status-Check nach jedem Open/Close-Befehl in diesem Modus.
+          </div>
+        </div>
         <div class="settings-section schedule-ha-actions">
           <p class="info-text">
-            Die Zeiten werden lokal gespeichert; die Ausführung erfolgt in Home Assistant über Automatisierungen
-            oder den Add-on-Scheduler — nicht über eine zentrale <code class="inline-code">input_text</code>-Hilfsentity.
+            Die Zeiten werden lokal gespeichert; die Ausführung erfolgt im Add-on-Scheduler.
+            Eine zentrale <code class="inline-code">input_text</code>-Hilfsentity ist dafür nicht nötig.
           </p>
         </div>
       </div>
@@ -2064,6 +2293,19 @@ class HKWebApp extends LitElement {
             </div>
           </div>
         </div>
+        <div class="settings-section">
+          <label class="checkbox-label-large">
+            <input
+              type="checkbox"
+              .checked=${daynightData.sicherheitsschliessen || false}
+              @change=${e => this.updateKlappenModusEinstellung(klappeId, 'daynight', 'sicherheitsschliessen', e.target.checked)}
+            />
+            <span>Sicherheitsschließzeiten anwenden</span>
+          </label>
+          <div class="info-text">
+            Aktiviert die Sicherheitsprüfungen (Endschalter/Status) nach Open/Close-Befehlen in diesem Modus.
+          </div>
+        </div>
       </div>
     `;
   }
@@ -2114,6 +2356,8 @@ class HKWebApp extends LitElement {
           </label>
           <div class="info-text">
             Die Sicherheitsschließzeiten werden im Reiter "Sicherheit" definiert.
+            Wenn sie aktiviert sind und die Endschalter/Status nach der Prüfzeit nicht zum erwarteten Zustand passen,
+            wird eine zweite Notification gesendet.
           </div>
         </div>
       </div>
@@ -2396,6 +2640,176 @@ class HKWebApp extends LitElement {
     `;
   }
 
+  renderSicherheit() {
+    const warnEnabled = localStorage.getItem('hkweb_sicherheit_schliesszeiten_warn_enabled') === 'true';
+    const notifySuffix = localStorage.getItem('hkweb_sicherheit_schliesszeiten_notify_suffix') || '';
+    const delayS = Number(localStorage.getItem('hkweb_sicherheit_schliesszeiten_delay_s'));
+    const effectiveDelayS = Number.isFinite(delayS) ? Math.max(5, Math.min(600, delayS)) : 45;
+    const klappen = this.getKlappenConfig();
+
+    return html`
+      <div class="content-header">
+        <h1>Sicherheit</h1>
+      </div>
+      <div class="hk-tab-stack">
+        <div class="glass-card hk-tab-card">
+          <h2 class="settings-title" style="margin:0 0 12px 0">Sicherheitsfunktionen</h2>
+
+          <div class="settings-section" style="margin-top:12px">
+            <label class="checkbox-label-large">
+              <input
+                type="checkbox"
+                .checked=${warnEnabled}
+                @change=${(e) => {
+                  localStorage.setItem('hkweb_sicherheit_schliesszeiten_warn_enabled', e.target.checked ? 'true' : 'false');
+                  this._schedulePersistToData();
+                  this.requestUpdate();
+                }}
+              />
+              <span>Schließzeiten: bei Fehlschlag warnen (Zeitpläne)</span>
+            </label>
+            <div class="info-text">
+              Wenn die Öffnen/Schließen-Aktion im Modus „Zeitpläne“ nach der Prüfzeit keinen erwarteten Endschalter-/Status erreicht,
+              wird eine Notification an iOS (Nabu Casa / Home Assistant Companion) gesendet.
+            </div>
+          </div>
+
+          <div class="settings-section" style="margin-top:12px">
+            <label class="entity-label" style="margin-bottom:6px">iOS Notify Service (ohne „notify.“)</label>
+            <input
+              type="text"
+              class="entity-input"
+              style="width:100%"
+              .value=${notifySuffix}
+              placeholder="z. B. mobile_app_iphone_mein_gerat"
+              @change=${(e) => {
+                localStorage.setItem('hkweb_sicherheit_schliesszeiten_notify_suffix', e.target.value || '');
+                this._schedulePersistToData();
+                this.requestUpdate();
+              }}
+            />
+          </div>
+
+          <div class="settings-section" style="margin-top:12px">
+            <button
+              type="button"
+              class="glass-btn schedule-sync-btn"
+              @click=${() => this._testSafetyNotification()}
+              title="Sendet eine Test-Notification an die iOS-App"
+            >
+              Testnachricht an iOS senden
+            </button>
+          </div>
+
+          <div class="settings-section" style="margin-top:12px">
+            <label class="entity-label" style="margin-bottom:6px">Prüfzeit (Sekunden nach Öffnen/Schließen)</label>
+            <input
+              type="number"
+              class="entity-input"
+              style="width:100%"
+              min="5"
+              max="600"
+              .value=${effectiveDelayS}
+              @change=${(e) => {
+                const v = Number(e.target.value);
+                localStorage.setItem('hkweb_sicherheit_schliesszeiten_delay_s', String(v));
+                this._schedulePersistToData();
+                this.requestUpdate();
+              }}
+            />
+          </div>
+        </div>
+
+        ${klappen.map((k) => {
+          const m = this.getKlappenModus(k.id);
+          const safeTimes = m?.sicherheit?.schliessenZeiten || [];
+          return html`
+            <div class="glass-card hk-tab-card">
+              <h2 class="settings-title" style="margin:0 0 8px 0">${k.name}</h2>
+              <div class="settings-section">
+                <h3 class="settings-section-title" style="margin-top:0">Sicherheitsschließzeiten</h3>
+                <div class="time-schedule-list">
+                  ${(safeTimes || []).map((zeit, index) => html`
+                    <div class="time-schedule-item">
+                      <input
+                        type="time"
+                        .value="${zeit}"
+                        @change=${(e) => {
+                          const zeiten = [...((m?.sicherheit?.schliessenZeiten) || safeTimes || [])];
+                          zeiten[index] = e.target.value;
+                          if (!this.klappenModi) this.loadModi();
+                          if (!this.klappenModi[k.id]) this.klappenModi[k.id] = this.createDefaultModusConfig();
+                          if (!this.klappenModi[k.id].sicherheit) this.klappenModi[k.id].sicherheit = { schliessenZeiten: [] };
+                          this.klappenModi[k.id].sicherheit.schliessenZeiten = zeiten;
+                          this.saveModi();
+                          this.requestUpdate();
+                        }}
+                      />
+                      <button
+                        class="remove-time-btn"
+                        @click=${() => {
+                          const zeiten = [...(this.getKlappenModus(k.id)?.sicherheit?.schliessenZeiten || [])];
+                          zeiten.splice(index, 1);
+                          if (!this.klappenModi) this.loadModi();
+                          if (!this.klappenModi[k.id]) this.klappenModi[k.id] = this.createDefaultModusConfig();
+                          if (!this.klappenModi[k.id].sicherheit) this.klappenModi[k.id].sicherheit = { schliessenZeiten: [] };
+                          this.klappenModi[k.id].sicherheit.schliessenZeiten = zeiten;
+                          this.saveModi();
+                          this.requestUpdate();
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  `)}
+                  <button
+                    class="add-time-btn"
+                    @click=${() => {
+                      const zeiten = [...(this.getKlappenModus(k.id)?.sicherheit?.schliessenZeiten || []) , '20:00'];
+                      if (!this.klappenModi) this.loadModi();
+                      if (!this.klappenModi[k.id]) this.klappenModi[k.id] = this.createDefaultModusConfig();
+                      if (!this.klappenModi[k.id].sicherheit) this.klappenModi[k.id].sicherheit = { schliessenZeiten: [] };
+                      this.klappenModi[k.id].sicherheit.schliessenZeiten = zeiten;
+                      this.saveModi();
+                      this.requestUpdate();
+                    }}
+                  >
+                    + Sicherheitsschließzeit hinzufügen
+                  </button>
+                </div>
+                <div class="info-text">
+                  Wenn die Zeit erreicht ist (und im aktuellen Modus „Sicherheitsschließzeiten anwenden“ aktiv ist), wird geprüft, ob die Klappe wirklich geschlossen ist.
+                </div>
+              </div>
+            </div>
+          `;
+        })}
+      </div>
+    `;
+  }
+
+  async _testSafetyNotification() {
+    try {
+      if (!this.hass?.callService) {
+        this.addLogEntry('Test-Notification: keine HA-Verbindung (callService fehlt).');
+        return;
+      }
+      const notifySuffix = localStorage.getItem('hkweb_sicherheit_schliesszeiten_notify_suffix') || '';
+      if (!notifySuffix) {
+        this.addLogEntry('Test-Notification: iOS Notify Service ist leer.');
+        return;
+      }
+      await this.hass.callService('notify', notifySuffix, {
+        title: 'HK Sicherheit',
+        message: 'Test: iOS Notification funktioniert.',
+      });
+      this.addLogEntry(`✓ Test-Notification gesendet → notify.${notifySuffix}`);
+    } catch (e) {
+      this.addLogEntry(`✗ Test-Notification fehlgeschlagen: ${String(e?.message || e)}`);
+      console.error('[TestSafetyNotification]', e);
+    }
+  }
+
   renderContent() {
     switch (this.activeTab) {
       case 'klappen':
@@ -2408,6 +2822,8 @@ class HKWebApp extends LitElement {
         return this.renderNotizen();
       case 'einstellungen':
         return this.renderEinstellungen();
+      case 'sicherheit':
+        return this.renderSicherheit();
       case 'log':
         return this.renderLog();
       default:
