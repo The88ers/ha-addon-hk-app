@@ -45,9 +45,9 @@ Einstellungen werden im Add-on nach **`/data/hkweb-settings.json`** geschrieben 
 
 ### 3.3 Tag/Nacht
 
-- Es werden **Sonnenauf- und -untergangszeiten** aus Ihrer **Postleitzahl** (über externe Dienste) ermittelt; dazu kommen **Offsets** (z. B. Minuten vor/nach Sonnenauf-/untergang).
-- Die Oberfläche zeigt die **errechnete Schließzeit** u. a. zur Kontrolle. Liegt sie **nach der spätesten Sicherheitsschließzeit**, wird eine **Offset-Änderung abgelehnt** (Offset wird zurückgesetzt, Hinweis im Log).
-- **Wichtig:** Die **automatische** Öffnen/Schließen-Minute im Add-on-Scheduler ist für diesen Modus **nicht** wie bei „Zeitpläne“ angebunden — d. h. das reine Umschalten auf „Tag/Nacht“ **löst keine** wiederkehrenden Button-Presses durch den Scheduler aus. Für tageslichtabhängiges Schalten können Sie die angezeigten Zeiten z. B. in **Home Assistant Automations** übernehmen oder parallel den Modus **Zeitpläne** nutzen.
+- Es werden **Sonnenauf- und -untergangszeiten** aus Ihrer **Postleitzahl** (über externe Dienste) ermittelt; dazu kommen **Offsets** (z. B. Minuten vor/nach Sonnenauf-/untergang). Die Zeiten beziehen sich auf **Europe/Berlin** und **ändern sich mit Kalendertag und Jahreszeit** — der Add-on-Scheduler **holt sie pro Tag neu** (Cache im laufenden Tag), damit Öffnen und Schließen zur richtigen Jahreszeit passieren.
+- Die Oberfläche zeigt die **errechneten Öffnungs-/Schließminuten** zur Kontrolle; die Anzeige **aktualisiert sich** u. a. etwa **alle 4 Stunden**, beim **Wiederaktivieren** der Seite und per **Aktualisieren**. Liegt die errechnete Schließzeit **nach der spätesten Sicherheitsschließzeit**, wird eine **Offset-Änderung abgelehnt** (Offset wird zurückgesetzt, Hinweis im Log).
+- Solange der Modus **Tag/Nacht** aktiv ist, führt der **Add-on-Scheduler** zur passenden **Minute** (wie bei Zeitpläne) die konfigurierten **Öffnen-** bzw. **Schließen-Buttons** aus — gestützt auf die **tagesaktuellen** Sonnenzeiten plus Offsets.
 
 ---
 
@@ -77,14 +77,14 @@ In **Benachrichtigungen** wird der Klappenzustand als kurzer Text aus den konfig
 - Diese Funktion steht **über** den Modi: Sie definiert den Zeitpunkt, zu dem „zu sein hat“, dass die Klappe zu ist. Deshalb dürfen **keine** geplanten Schließzeiten (Modus Zeitpläne) und **keine** errechnete Tag/Nacht-Schließzeit **nach der spätesten** eingetragenen Sicherheitsschließzeit liegen — die App **lehnt** solche Eingaben ab.
 - Ablauf (nach Ablauf der **Prüfzeit** ab der vollen Minute der Sicherheitsschließzeit): Zustand lesen → wenn nicht geschlossen, **Warnung** mit Ist-Zustand → einmal **Schließen** auslösen → erneut **Prüfzeit** warten → erneut prüfen → **Erfolgs-** oder **Fehlermeldung** (siehe unten).
 
-### 5.2 Vollzugsprüfung (Zeitpläne und optional manuell)
+### 5.2 Vollzugsprüfung (Zeitpläne, Tag/Nacht und optional manuell)
 
-- Schalter **„Vollzugsprüfung“** unter **Sicherheit**: Nach jedem **geplanten** Öffnen/Schließen (Modus **Zeitpläne**) wartet das Add-on die **Prüfzeit** und sendet eine Benachrichtigung, ob der **erwartete Zustand** erreicht wurde (**Erfolg** oder **Misserfolg** mit Zustandstext).
+- Schalter **„Vollzugsprüfung“** unter **Sicherheit**: Nach jedem **geplanten** Öffnen/Schließen (Modus **Zeitpläne** oder **Tag/Nacht**) wartet das Add-on die **Prüfzeit** und sendet eine Benachrichtigung, ob der **erwartete Zustand** erreicht wurde (**Erfolg** oder **Misserfolg** mit Zustandstext).
 - **Manuell:** Zusätzlich in jedem Modus die Checkbox **„Vollzugsprüfung bei manueller Bedienung (dieser Modus)“** aktivieren. Es gilt dieselbe **globale** Vollzugsprüfung plus eingetragene **Notify-Empfänger**.
 
 ### 5.3 Prüfzeit, Notify, Watchdog
 
-- **Prüfzeit (Sekunden):** Wartezeit bis zur ersten Zustandsprüfung nach einem geplanten Öffnen/Schließen; dieselbe Dauer wird nach dem **einmaligen Nach-Schließen** bei den Sicherheitsschließzeiten erneut gewartet (5–600 s, Standard oft 45).
+- **Prüfzeit (Sekunden):** Wartezeit bis zur ersten Zustandsprüfung nach einem geplanten Öffnen/Schließen (Zeitpläne oder Tag/Nacht); dieselbe Dauer wird nach dem **einmaligen Nach-Schließen** bei den Sicherheitsschließzeiten erneut gewartet (5–600 s, Standard oft 45).
 - **Benachrichtigungen:** konfigurierte `notify`-Ziele (z. B. Companion-App); **Testbutton** in der UI.
 - **Watchdog:** Supervisor kann **`/api/health`** prüfen.
 
@@ -97,11 +97,11 @@ In **Benachrichtigungen** wird der Klappenzustand als kurzer Text aus den konfig
 | Situation | Meldung (Auszug) |
 |-----------|------------------|
 | Nach Prüfzeit nicht geschlossen, Schließen-Button vorhanden | **WARNUNG:** Klappe … zur definierten Sicherheitsschließzeit nicht geschlossen. Zustand der Klappe: „…“. Es wird versucht, die Klappe erneut zu schließen. |
-| Nicht geschlossen, kein Schließen-Button | **WARNUNG:** … Kein Schließen-Button konfiguriert — kein automatischer Nachversuch möglich. |
+| Nicht geschlossen, im **Setup** kein **Schließen-**`button` eingetragen | **WARNUNG:** … Kein Schließen-Button konfiguriert — kein automatischer Nachversuch möglich. (Das Add-on kann sonst kein `button.press` fürs Schließen senden.) |
 | Nachversuch Schließen erfolgreich | Nach Abweichung zur eingestellten Schließzeit konnte die Klappe … geschlossen werden. |
 | Nachversuch fehlgeschlagen oder `button.press` scheitert | **WARNUNG:** Schließen der Klappe … fehlgeschlagen. (bei Servicefehler ggf. mit technischem Zusatz in Klammern) |
 
-### B) Vollzugsprüfung (Zeitplan oder manuell mit Modus-Checkbox)
+### B) Vollzugsprüfung (Zeitplan, Tag/Nacht oder manuell mit Modus-Checkbox)
 
 | Situation | Meldung (Auszug) |
 |-----------|------------------|

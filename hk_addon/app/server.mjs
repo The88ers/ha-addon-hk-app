@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { startScheduler } from './scheduler.mjs';
 import { initServerLogCapture, getAddonLogLines } from './server-log.mjs';
+import { getSunTimesForPlzDE } from './sun-times.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -22,10 +23,6 @@ const PORT =
     : 8099;
 const SUPERVISOR_TOKEN = process.env.SUPERVISOR_TOKEN;
 const HA_API = 'http://supervisor/core/api';
-
-/** Nominatim verlangt einen erkennbaren User-Agent (Browser-`fetch` setzt ihn oft nicht / CORS). */
-const NOMINATIM_UA =
-  'HK-Addon/0.2.14 (Home Assistant add-on; https://github.com/The88ers/ha-addon-hk-app)';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -102,75 +99,13 @@ app.get('/api/addon/sun-times', async (req, res) => {
     return;
   }
   try {
-    const geoUrl = `https://nominatim.openstreetmap.org/search?postalcode=${encodeURIComponent(plz)}&countrycodes=de&format=json&limit=1`;
-    const geoR = await fetch(geoUrl, {
-      headers: {
-        'User-Agent': NOMINATIM_UA,
-        Accept: 'application/json',
-        'Accept-Language': 'de',
-      },
-    });
-    if (!geoR.ok) {
-      const t = await geoR.text();
-      console.error('[api/addon/sun-times] nominatim', geoR.status, t.slice(0, 300));
-      res.status(502).json({ ok: false, error: `Geocoding HTTP ${geoR.status}` });
-      return;
-    }
-    const geoData = await geoR.json();
-    if (!Array.isArray(geoData) || geoData.length === 0) {
-      res.status(404).json({ ok: false, error: 'PLZ nicht gefunden' });
-      return;
-    }
-    const lat = parseFloat(geoData[0].lat);
-    const lon = parseFloat(geoData[0].lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-      res.status(502).json({ ok: false, error: 'Ungültige Koordinaten von Nominatim' });
-      return;
-    }
-
-    const sunUrl = `https://api.sunrise-sunset.org/json?lat=${lat}&lng=${lon}&formatted=0`;
-    const sunR = await fetch(sunUrl, { headers: { Accept: 'application/json' } });
-    if (!sunR.ok) {
-      const t = await sunR.text();
-      console.error('[api/addon/sun-times] sunrise-sunset', sunR.status, t.slice(0, 300));
-      res.status(502).json({ ok: false, error: `Sonnenzeiten-API HTTP ${sunR.status}` });
-      return;
-    }
-    const sunData = await sunR.json();
-    if (sunData.status !== 'OK' || !sunData.results) {
-      res.status(502).json({ ok: false, error: 'Sonnenzeiten-API: kein OK' });
-      return;
-    }
-
-    const parseUtc = (iso) => {
-      const s = String(iso || '');
-      if (!s) return null;
-      const d = new Date(/Z|[+-]\d{2}:?\d{2}$/.test(s) ? s : `${s}Z`);
-      return Number.isNaN(d.getTime()) ? null : d;
-    };
-    const sunriseUTC = parseUtc(sunData.results.sunrise);
-    const sunsetUTC = parseUtc(sunData.results.sunset);
-    if (!sunriseUTC || !sunsetUTC) {
-      res.status(502).json({ ok: false, error: 'Sonnenzeiten konnten nicht geparst werden' });
-      return;
-    }
-
-    const formatter = new Intl.DateTimeFormat('de-DE', {
-      hour: '2-digit',
-      minute: '2-digit',
-      timeZone: 'Europe/Berlin',
-    });
-    res.json({
-      ok: true,
-      plz,
-      sunrise: formatter.format(sunriseUTC),
-      sunset: formatter.format(sunsetUTC),
-      lat,
-      lon,
-    });
+    const r = await getSunTimesForPlzDE(plz);
+    res.json({ ok: true, ...r });
   } catch (e) {
     console.error('[api/addon/sun-times]', e);
-    res.status(502).json({ ok: false, error: String(e.message || e) });
+    const msg = String(e?.message || e);
+    const status = msg.includes('PLZ nicht gefunden') ? 404 : 502;
+    res.status(status).json({ ok: false, error: msg });
   }
 });
 

@@ -2,12 +2,14 @@
  * Add-on Scheduler:
  * - liest UI-Konfig aus /data/hkweb-settings.json
  * - führt Zeitpläne (modus: 'schedule') zur passenden Minute aus
+ * - Tag/Nacht (modus: 'daynight'): tagesaktuelle Sonnenzeiten (PLZ) + Offsets, Zeitzone Europe/Berlin
  * - Sicherheitsschließzeiten (global + Zeiten pro Klappe): Prüfung + optional Nach-Schließen + Notify
  * - Vollzugsprüfung nach geplantem Öffnen/Schließen: Erfolg/Misserfolg per Notify
  */
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
+import { getSunTimesForPlzDE } from './sun-times.mjs';
 
 const TICK_MS = 10_000;
 const SETTINGS_PATH = '/data/hkweb-settings.json';
@@ -18,19 +20,50 @@ const SUPERVISOR_TOKEN = process.env.SUPERVISOR_TOKEN;
 let timer = null;
 let lastMinuteKey = null;
 let running = false;
+let lastBerlinDateKey = null;
+/** `${plz}|${yyyy-mm-dd}` → { sunrise: 'HH:mm', sunset: 'HH:mm' } (Europe/Berlin, Kalendertag) */
+const sunByPlzDay = new Map();
 
 function pad2(n) {
   return String(n).padStart(2, '0');
 }
 
-function getLocalTimeHM(d) {
-  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+function getBerlinWallClockParts(d = new Date()) {
+  const fmt = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Berlin',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(d);
+  const pickN = (t) => Number(parts.find((p) => p.type === t)?.value ?? NaN);
+  return {
+    y: pickN('year'),
+    mo: pickN('month'),
+    da: pickN('day'),
+    h: pickN('hour'),
+    mi: pickN('minute'),
+  };
 }
 
-function getMinuteKeyLocal(d) {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(
-    d.getHours(),
-  )}:${pad2(d.getMinutes())}`;
+function getBerlinTimeHM(d = new Date()) {
+  const { h, mi } = getBerlinWallClockParts(d);
+  if (!Number.isFinite(h) || !Number.isFinite(mi)) return '00:00';
+  return `${pad2(h)}:${pad2(mi)}`;
+}
+
+function getBerlinDateKey(d = new Date()) {
+  const { y, mo, da } = getBerlinWallClockParts(d);
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(da)) return '1970-01-01';
+  return `${y}-${pad2(mo)}-${pad2(da)}`;
+}
+
+function getMinuteKeyBerlin(d = new Date()) {
+  const { y, mo, da, h, mi } = getBerlinWallClockParts(d);
+  return `${y}-${pad2(mo)}-${pad2(da)} ${pad2(h)}:${pad2(mi)}`;
 }
 
 function haHeaders() {
@@ -91,6 +124,26 @@ function normTimeStr(s) {
   if (!s) return '';
   const t = String(s).trim();
   return t.length >= 5 ? t.slice(0, 5) : '';
+}
+
+/** HH:mm auch mit einstelligen Stunden (z. B. API-/Intl-Ausgabe) */
+function normHHmmFlexible(s) {
+  const t = String(s ?? '').trim();
+  const m = t.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return '';
+  const h = Number(m[1]);
+  const mi = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(mi) || mi > 59 || h > 23) return '';
+  return `${pad2(h)}:${pad2(mi)}`;
+}
+
+function addMinutesToHHMM(hhmm, deltaMin) {
+  const n = normHHmmFlexible(hhmm);
+  if (!n) return '';
+  const [h, m] = n.split(':').map(Number);
+  let t = h * 60 + m + (Number(deltaMin) || 0);
+  t = ((t % 1440) + 1440) % 1440;
+  return `${pad2(Math.floor(t / 60))}:${pad2(t % 60)}`;
 }
 
 /** HH:mm → Minuten seit Mitternacht (0–1439); ungültig → NaN */
@@ -314,7 +367,7 @@ async function tick(log) {
   running = true;
   try {
     const now = new Date();
-    const minuteKey = getMinuteKeyLocal(now);
+    const minuteKey = getMinuteKeyBerlin(now);
     if (minuteKey === lastMinuteKey) return;
     lastMinuteKey = minuteKey;
 
@@ -333,8 +386,49 @@ async function tick(log) {
     const delaySRaw = Number(keys['hkweb_sicherheit_schliesszeiten_delay_s']);
     const delayS = Number.isFinite(delaySRaw) ? Math.max(5, Math.min(600, delaySRaw)) : 45;
 
-    const timeStr = getLocalTimeHM(now);
+    const berlinDateKey = getBerlinDateKey(now);
+    if (berlinDateKey !== lastBerlinDateKey) {
+      sunByPlzDay.clear();
+      lastBerlinDateKey = berlinDateKey;
+    }
+
+    const timeStr = getBerlinTimeHM(now);
     const klappeList = Array.isArray(klappenConfig) ? klappenConfig : [];
+
+    const daynightPlzSet = new Set();
+    for (const klappe of klappeList) {
+      const kid0 = String(klappe.id || '').trim();
+      if (!kid0) continue;
+      const mode0 = klappenModi?.[kid0];
+      if (mode0?.modus === 'daynight') {
+        const plz0 = String(mode0?.daynight?.plz || '').trim();
+        if (plz0.length >= 5) daynightPlzSet.add(plz0);
+      }
+    }
+
+    const sunByPlz = {};
+    let didSunNetwork = false;
+    for (const plz of daynightPlzSet) {
+      const cacheKey = `${plz}|${berlinDateKey}`;
+      if (sunByPlzDay.has(cacheKey)) {
+        sunByPlz[plz] = sunByPlzDay.get(cacheKey);
+        continue;
+      }
+      if (didSunNetwork) await sleep(1100);
+      didSunNetwork = true;
+      try {
+        const r = await getSunTimesForPlzDE(plz);
+        const entry = {
+          sunrise: normHHmmFlexible(r.sunrise),
+          sunset: normHHmmFlexible(r.sunset),
+        };
+        sunByPlzDay.set(cacheKey, entry);
+        sunByPlz[plz] = entry;
+      } catch (e) {
+        log(`[scheduler] Sonnenzeiten PLZ ${plz}: ${String(e?.message || e)}`);
+        sunByPlz[plz] = null;
+      }
+    }
 
     const actions = [];
     const safetyCloseChecks = [];
@@ -355,6 +449,25 @@ async function tick(log) {
         }
         if (closeTimes.includes(timeStr) && klappe.buttonSchliessen) {
           actions.push({ kid, klappe, direction: 'close', vollzug: warnEnabled });
+        }
+      }
+
+      // 1b) Tag/Nacht: Sonnenzeiten des Kalendertags (Europe/Berlin) + Offsets
+      if (modus === 'daynight') {
+        const plz = String(mode?.daynight?.plz || '').trim();
+        const st = sunByPlz[plz];
+        if (st?.sunrise && st?.sunset) {
+          const offO = Number(mode?.daynight?.offsetOeffnen) || 0;
+          const offS = Number(mode?.daynight?.offsetSchliessen) || 0;
+          const oeffnen = addMinutesToHHMM(st.sunrise, offO);
+          const schliessen = addMinutesToHHMM(st.sunset, offS);
+          const tNorm = normHHmmFlexible(timeStr);
+          if (normHHmmFlexible(oeffnen) === tNorm && klappe.buttonOeffnen) {
+            actions.push({ kid, klappe, direction: 'open', vollzug: warnEnabled });
+          }
+          if (normHHmmFlexible(schliessen) === tNorm && klappe.buttonSchliessen) {
+            actions.push({ kid, klappe, direction: 'close', vollzug: warnEnabled });
+          }
         }
       }
 
@@ -439,7 +552,7 @@ async function tick(log) {
 
 export function startScheduler(log = console.log) {
   if (timer) return;
-  log('[scheduler] gestartet (Zeitpläne + Security-Checks)');
+  log('[scheduler] gestartet (Zeitpläne, Tag/Nacht, Security-Checks)');
   // Sofort ein Tick, damit beim Add-on-Start nicht bis zum nächsten Intervall gewartet wird.
   void tick(log);
   timer = setInterval(() => {
