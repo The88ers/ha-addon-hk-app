@@ -25,7 +25,7 @@ const HA_API = 'http://supervisor/core/api';
 
 /** Nominatim verlangt einen erkennbaren User-Agent (Browser-`fetch` setzt ihn oft nicht / CORS). */
 const NOMINATIM_UA =
-  'HK-Addon/0.2.12 (Home Assistant add-on; https://github.com/The88ers/ha-addon-hk-app)';
+  'HK-Addon/0.2.14 (Home Assistant add-on; https://github.com/The88ers/ha-addon-hk-app)';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));

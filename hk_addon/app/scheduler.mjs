@@ -2,7 +2,8 @@
  * Add-on Scheduler:
  * - liest UI-Konfig aus /data/hkweb-settings.json
  * - führt Zeitpläne (modus: 'schedule') zur passenden Minute aus
- * - optional: "Schließzeiten" Security-Check + iOS/Companion Notification bei Fehlschlag
+ * - Sicherheitsschließzeiten (global + Zeiten pro Klappe): Prüfung + optional Nach-Schließen + Notify
+ * - Vollzugsprüfung nach geplantem Öffnen/Schließen: Erfolg/Misserfolg per Notify
  */
 
 import fs from 'fs/promises';
@@ -92,6 +93,30 @@ function normTimeStr(s) {
   return t.length >= 5 ? t.slice(0, 5) : '';
 }
 
+/** HH:mm → Minuten seit Mitternacht (0–1439); ungültig → NaN */
+function timeStrToMinutes(t) {
+  const n = normTimeStr(t);
+  if (!n || n.length < 5) return NaN;
+  const [h, m] = n.split(':').map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return NaN;
+  return h * 60 + m;
+}
+
+/** Kurzbeschreibung des Klappenzustands für Notify-Texte */
+function formatKlappeZustandText(states, klappe) {
+  const parts = [];
+  const get = (id) => (id ? states[id]?.state ?? null : null);
+  const st = klappe?.statusEntity;
+  const zu = klappe?.zustandEntity;
+  const eo = klappe?.endstopObenEntity;
+  const eu = klappe?.endstopUntenEntity;
+  if (st) parts.push(`Status: ${get(st) ?? '—'}`);
+  if (zu) parts.push(`Zustand: ${get(zu) ?? '—'}`);
+  if (eo) parts.push(`Endschalter oben: ${get(eo) ?? '—'}`);
+  if (eu) parts.push(`Endschalter unten: ${get(eu) ?? '—'}`);
+  return parts.length ? parts.join('; ') : 'keine Sensoren konfiguriert';
+}
+
 function getKlappeName(klappe, kid) {
   return klappe?.name && String(klappe.name).trim() ? String(klappe.name).trim() : kid;
 }
@@ -146,14 +171,8 @@ function isKlappeClosedFromStates(states, klappe) {
   return endstopObenOk && endstopUntenOk && statusOk && zustandOk;
 }
 
-async function checkScheduleActionOutcome({
-  klappe,
-  kid,
-  direction,
-  notifyTargets,
-  variant = 'first', // 'first' | 'second'
-}) {
-  // direction: 'open' | 'close'
+/** Vollzugsprüfung nach geplantem Öffnen/Schließen (eine Nachricht bei Erfolg oder Misserfolg). */
+async function checkScheduleActionOutcome({ klappe, kid, direction, notifyTargets, vollzug }) {
   const states = await fetchAllHaStates();
   const endstopObenEntity = klappe?.endstopObenEntity || '';
   const endstopUntenEntity = klappe?.endstopUntenEntity || '';
@@ -172,6 +191,7 @@ async function checkScheduleActionOutcome({
   const zustandState = getState(zustandEntity);
 
   const name = getKlappeName(klappe, kid);
+  const zustandTxt = formatKlappeZustandText(states, klappe);
 
   const statusLower = String(statusState ?? '').toLowerCase();
   const zustandLower = String(zustandState ?? '').toLowerCase();
@@ -180,9 +200,8 @@ async function checkScheduleActionOutcome({
   const expectedClose = 'geschlossen';
 
   const notify = async (message) => {
-    if (!notifyTargets?.length) return { notified: false };
+    if (!vollzug || !notifyTargets?.length) return;
     await callNotifyAll(notifyTargets, { title: 'HK Sicherheit', message });
-    return { notified: true };
   };
 
   if (direction === 'open') {
@@ -192,35 +211,30 @@ async function checkScheduleActionOutcome({
     const zustandOk = zustandEntity ? zustandLower.includes(expectedOpen) : true;
 
     const ok = endstopObenOk && endstopUntenOk && statusOk && zustandOk;
-    if (ok) return { ok: true };
-
-    if (variant === 'first') {
-      await notify(`Öffnen der Klappe ${name} fehlgeschlagen`);
-    } else {
-      await notify(`Sicherheitsschließzeiten: Öffnen der Klappe ${name} fehlgeschlagen`);
+    if (ok) {
+      await notify(`Klappe ${name} wurde geöffnet.`);
+      return { ok: true };
     }
+    await notify(`Klappe ${name} konnte nicht geöffnet werden. Zustand der Klappe: "${zustandTxt}"`);
     return { ok: false };
   }
 
-  // close
   const endstopObenOk = endstopObenEntity ? endstopObenState === 'Inaktiv' : true;
   const endstopUntenOk = endstopUntenEntity ? endstopUntenState === 'Aktiv' : true;
   const statusOk = statusEntity ? statusLower.includes(expectedClose) : true;
   const zustandOk = zustandEntity ? zustandLower.includes(expectedClose) : true;
 
   const ok = endstopObenOk && endstopUntenOk && statusOk && zustandOk;
-  if (ok) return { ok: true };
-
-  if (variant === 'first') {
-    await notify(`Schließen der Klappe ${name} fehlgeschlagen`);
-  } else {
-    await notify(`Sicherheitsschließzeiten: Schließen der Klappe ${name} fehlgeschlagen`);
+  if (ok) {
+    await notify(`Klappe ${name} wurde geschlossen.`);
+    return { ok: true };
   }
+  await notify(`Klappe ${name} konnte nicht geschlossen werden. Zustand der Klappe: "${zustandTxt}"`);
   return { ok: false };
 }
 
 /**
- * Sicherheitsschließzeit: prüfen, ggf. einmal Schließen anstoßen, nach Prüfzeit erneut prüfen, benachrichtigen.
+ * Sicherheitsschließzeit: nach Prüfzeit prüfen; bei offen WARNUNG + Nachversuch Schließen; erneut prüfen.
  */
 async function checkKlappeClosedAtSafetyTimes({ klappe, kid, notifyTargets, delayS, log }) {
   const name = getKlappeName(klappe, kid);
@@ -232,6 +246,7 @@ async function checkKlappeClosedAtSafetyTimes({ klappe, kid, notifyTargets, dela
     return { ok: true };
   }
 
+  const zustand1 = formatKlappeZustandText(states1, klappe);
   const btn = String(klappe?.buttonSchliessen || '').trim();
   const canNotify = notifyTargets?.length > 0;
 
@@ -240,10 +255,17 @@ async function checkKlappeClosedAtSafetyTimes({ klappe, kid, notifyTargets, dela
     if (canNotify) {
       await callNotifyAll(notifyTargets, {
         title: 'HK Sicherheit',
-        message: `Sicherheitsschließzeiten: Klappe ${name} ist nicht geschlossen. Kein Schließen-Button konfiguriert — kein erneuter Versuch möglich.`,
+        message: `WARNUNG: Klappe ${name} zur definierten Sicherheitsschließzeit nicht geschlossen. Zustand der Klappe: "${zustand1}". Kein Schließen-Button konfiguriert — kein automatischer Nachversuch möglich.`,
       });
     }
     return { ok: false, reason: 'no_button' };
+  }
+
+  if (canNotify) {
+    await callNotifyAll(notifyTargets, {
+      title: 'HK Sicherheit',
+      message: `WARNUNG: Klappe ${name} zur definierten Sicherheitsschließzeit nicht geschlossen. Zustand der Klappe: "${zustand1}". Es wird versucht, die Klappe erneut zu schließen.`,
+    });
   }
 
   try {
@@ -255,7 +277,7 @@ async function checkKlappeClosedAtSafetyTimes({ klappe, kid, notifyTargets, dela
     if (canNotify) {
       await callNotifyAll(notifyTargets, {
         title: 'HK Sicherheit',
-        message: `Sicherheitsschließzeiten: Klappe ${name} ist nicht geschlossen. Schließen konnte nicht ausgelöst werden: ${err}`,
+        message: `WARNUNG: Schließen der Klappe ${name} fehlgeschlagen. (${err})`,
       });
     }
     return { ok: false, reason: 'press_failed' };
@@ -271,7 +293,7 @@ async function checkKlappeClosedAtSafetyTimes({ klappe, kid, notifyTargets, dela
     if (canNotify) {
       await callNotifyAll(notifyTargets, {
         title: 'HK Sicherheit',
-        message: `Sicherheitsschließzeiten: Klappe ${name} war nicht geschlossen — Schließen wurde einmal angestoßen. Ergebnis: jetzt geschlossen.`,
+        message: `Nach Abweichung zur eingestellten Schließzeit konnte die Klappe ${name} geschlossen werden.`,
       });
     }
     return { ok: true, recovered: true };
@@ -281,7 +303,7 @@ async function checkKlappeClosedAtSafetyTimes({ klappe, kid, notifyTargets, dela
   if (canNotify) {
     await callNotifyAll(notifyTargets, {
       title: 'HK Sicherheit',
-      message: `Sicherheitsschließzeiten: Klappe ${name} war nicht geschlossen — Schließen wurde einmal angestoßen. Ergebnis: weiterhin nicht geschlossen.`,
+      message: `WARNUNG: Schließen der Klappe ${name} fehlgeschlagen.`,
     });
   }
   return { ok: false, reason: 'still_open' };
@@ -306,6 +328,7 @@ async function tick(log) {
     const klappenModi = safeJsonParse(keys['hkweb_klappen_modi'], {});
 
     const warnEnabled = keys['hkweb_sicherheit_schliesszeiten_warn_enabled'] === 'true';
+    const safetyCloseGlobal = keys['hkweb_sicherheit_safety_close_global'] !== 'false';
     const notifyTargets = parseNotifyTargetsFromKeys(keys);
     const delaySRaw = Number(keys['hkweb_sicherheit_schliesszeiten_delay_s']);
     const delayS = Number.isFinite(delaySRaw) ? Math.max(5, Math.min(600, delaySRaw)) : 45;
@@ -321,7 +344,6 @@ async function tick(log) {
       const mode = klappenModi?.[kid];
       const modus = mode?.modus;
       const schedule = mode?.schedule || {};
-      const scheduleSecondEnabled = Boolean(schedule?.sicherheitsschliessen === true);
 
       // 1) Timeplan-Ausführung nur wenn Modus "schedule"
       if (modus === 'schedule') {
@@ -329,19 +351,17 @@ async function tick(log) {
         const closeTimes = Array.isArray(schedule.schliessenZeiten) ? schedule.schliessenZeiten.map(normTimeStr) : [];
 
         if (openTimes.includes(timeStr) && klappe.buttonOeffnen) {
-          actions.push({ kid, klappe, direction: 'open', firstEnabled: warnEnabled, secondEnabled: scheduleSecondEnabled });
+          actions.push({ kid, klappe, direction: 'open', vollzug: warnEnabled });
         }
         if (closeTimes.includes(timeStr) && klappe.buttonSchliessen) {
-          actions.push({ kid, klappe, direction: 'close', firstEnabled: warnEnabled, secondEnabled: scheduleSecondEnabled });
+          actions.push({ kid, klappe, direction: 'close', vollzug: warnEnabled });
         }
       }
 
-      // 2) Sicherheitsschließzeiten: laufen für JEDE aktuelle Klappen-Modes,
-      //    solange in diesem Modus die Checkbox aktiv ist.
-      const currentModeEnabled = Boolean(mode?.[modus]?.sicherheitsschliessen === true);
+      // 2) Sicherheitsschließzeiten: global schaltbar; Zeiten pro Klappe (Reiter Sicherheit)
       const safeTimesRaw = mode?.sicherheit?.schliessenZeiten;
       const safeTimes = Array.isArray(safeTimesRaw) ? safeTimesRaw.map(normTimeStr) : [];
-      if (currentModeEnabled && safeTimes.includes(timeStr)) {
+      if (safetyCloseGlobal && safeTimes.length && safeTimes.includes(timeStr)) {
         safetyCloseChecks.push({ kid, klappe });
       }
     }
@@ -367,7 +387,7 @@ async function tick(log) {
 
     // Button-Presses parallel ausführen (ohne auf Checks zu warten).
     await Promise.all(
-      actions.map(async ({ kid, klappe, direction, firstEnabled, secondEnabled }) => {
+      actions.map(async ({ kid, klappe, direction, vollzug }) => {
         const buttonEntity = direction === 'open' ? klappe.buttonOeffnen : klappe.buttonSchliessen;
         if (!buttonEntity) return;
         const name = getKlappeName(klappe, kid);
@@ -375,50 +395,35 @@ async function tick(log) {
           await callHaService('button', 'press', { entity_id: buttonEntity });
         } catch (e) {
           log(`[scheduler] button.press fehlgeschlagen (${kid} ${direction}): ${String(e?.message || e)}`);
-          if (notifyTargets.length && firstEnabled) {
+          if (notifyTargets.length && vollzug) {
+            let statesSnap = {};
+            try {
+              statesSnap = await fetchAllHaStates();
+            } catch (_) {
+              /* ignore */
+            }
+            const zt = formatKlappeZustandText(statesSnap, klappe);
+            const open = direction === 'open';
             await callNotifyAll(notifyTargets, {
               title: 'HK Sicherheit',
-              message: `${direction === 'open' ? 'Öffnen' : 'Schließen'} der Klappe ${name} fehlgeschlagen`,
-            });
-          }
-          if (notifyTargets.length && secondEnabled) {
-            await callNotifyAll(notifyTargets, {
-              title: 'HK Sicherheit',
-              message: `Sicherheitsschließzeiten: ${direction === 'open' ? 'Öffnen' : 'Schließen'} der Klappe ${name} fehlgeschlagen`,
+              message: open
+                ? `Klappe ${name} konnte nicht geöffnet werden. Zustand der Klappe: "${zt}"`
+                : `Klappe ${name} konnte nicht geschlossen werden. Zustand der Klappe: "${zt}"`,
             });
           }
           return;
         }
 
-        const scheduleChecks = [];
-        if (firstEnabled) {
-          scheduleChecks.push(() =>
-            checkScheduleActionOutcome({
-              klappe,
-              kid,
-              direction,
-              notifyTargets,
-              variant: 'first',
-            }),
-          );
-        }
-        if (secondEnabled) {
-          scheduleChecks.push(() =>
-            checkScheduleActionOutcome({
-              klappe,
-              kid,
-              direction,
-              notifyTargets,
-              variant: 'second',
-            }),
-          );
-        }
-        if (scheduleChecks.length) {
+        if (vollzug) {
           setTimeout(() => {
-            scheduleChecks.forEach((fn) => {
-              fn().catch((e) => {
-                log(`[scheduler] Security-Check Fehler (${kid} ${direction}): ${String(e?.message || e)}`);
-              });
+            checkScheduleActionOutcome({
+              klappe,
+              kid,
+              direction,
+              notifyTargets,
+              vollzug: true,
+            }).catch((err) => {
+              log(`[scheduler] Vollzugsprüfung Fehler (${kid} ${direction}): ${String(err?.message || err)}`);
             });
           }, delayS * 1000);
         }
