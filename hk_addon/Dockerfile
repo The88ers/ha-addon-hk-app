@@ -19,7 +19,10 @@ RUN \
 
 RUN apk add --no-cache \
         nodejs \
-        npm
+        npm \
+        tzdata
+
+ENV TZ=Europe/Berlin
 
 WORKDIR /app
 COPY app/package.json app/package-lock.json* ./

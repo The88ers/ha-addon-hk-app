@@ -28,26 +28,17 @@ function pad2(n) {
   return String(n).padStart(2, '0');
 }
 
-/** Ein Formatter pro Prozess: wiederholtes `new Intl.DateTimeFormat` kann auf schwachen Systemen OOM auslösen (ICU-Cache). */
-const BERLIN_WALL_CLOCK = new Intl.DateTimeFormat('en-GB', {
-  timeZone: 'Europe/Berlin',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-});
-
+/**
+ * „Berlin“-Wanduhr ohne Intl (ICU verursachte auf manchen Hosts sofort OOM).
+ * Voraussetzung: Prozess läuft mit TZ=Europe/Berlin (run + Dockerfile).
+ */
 function getBerlinWallClockParts(d = new Date()) {
-  const parts = BERLIN_WALL_CLOCK.formatToParts(d);
-  const pickN = (t) => Number(parts.find((p) => p.type === t)?.value ?? NaN);
   return {
-    y: pickN('year'),
-    mo: pickN('month'),
-    da: pickN('day'),
-    h: pickN('hour'),
-    mi: pickN('minute'),
+    y: d.getFullYear(),
+    mo: d.getMonth() + 1,
+    da: d.getDate(),
+    h: d.getHours(),
+    mi: d.getMinutes(),
   };
 }
 
@@ -131,7 +122,7 @@ function normTimeStr(s) {
   return t.length >= 5 ? t.slice(0, 5) : '';
 }
 
-/** HH:mm auch mit einstelligen Stunden (z. B. API-/Intl-Ausgabe) */
+/** HH:mm auch mit einstelligen Stunden (z. B. API-Ausgabe) */
 function normHHmmFlexible(s) {
   const t = String(s ?? '').trim();
   const m = t.match(/^(\d{1,2}):(\d{2})/);

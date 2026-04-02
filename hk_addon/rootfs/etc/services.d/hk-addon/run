@@ -3,7 +3,7 @@
 # HK Addon – Node-Server (Ingress + Proxy zum HA-Core)
 # sh + with-contenv: Supervisor-Env wie bashio, ohne Bash-Pflicht für reines exec
 # ==============================================================================
-# Intl/ICU (Europe/Berlin) braucht genug V8-Heap; auf manchen Add-on-Hosts sonst
-# „DateTimePatternGeneratorCache … out of memory“ → 502 durch ständigen Neustart.
+# Europe/Berlin ohne Intl: Date#getHours() etc. nutzen TZ (tzdata im Image).
+export TZ=Europe/Berlin
 export NODE_OPTIONS="--max-old-space-size=128"
 exec node /app/server.mjs
