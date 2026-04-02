@@ -3,6 +3,15 @@
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/).  
 Die **Versionsnummer** entspricht `version` in `hk_addon/config.yaml` (Quelle für Home Assistant).
 
+## [0.2.9] – 2026-04-03
+
+### Added
+- **Sicherheit / Notify:** mehrere iOS-Companion-Ziele (`notify.mobile_app_*`), Auswahl aus HA-Dienstliste, manuelles Hinzufügen, Live-Validierung, Testnachricht an alle Empfänger.
+- **Setup:** sofortige Entity-Prüfung beim Tippen (`@input`).
+
+### Changed
+- **Sicherheitsschließzeiten (Scheduler):** bei Abweichung einmal `Schließen` auslösen, nach konfigurierter Prüfzeit erneut prüfen; eine Benachrichtigung mit Ergebnis (geschlossen / weiter offen / kein Button / Fehler). Prüfung läuft auch ohne konfigurierte Notify-Ziele (ohne Push).
+
 ## [0.2.8] – 2026-04-02
 
 ### Added
