@@ -35,7 +35,7 @@ if (typeof window !== 'undefined' && !window.__hkwebBfCacheBound) {
 
 // --- HK WEB App (Fallout Theme) ---
 class HKWebApp extends LitElement {
-  static VERSION = '2.1.17';
+  static VERSION = '2.1.18';
 
   /** Sidebar: im Add-on = Git/config (window.__HK_ADDON_VERSION__), sonst App-Bundle-Version. */
   static getDisplayVersion() {
@@ -76,6 +76,8 @@ class HKWebApp extends LitElement {
       safetyNotifyManualDraft: { type: String },
       /** Reiter Sicherheit: welches (i)-Popover per Klick offen (leer = zu) */
       securityInfoPinnedKey: { type: String, attribute: false },
+      /** Tab Klappen: pro Klappen-ID ob Modus/Hardware-Einklappbereich offen ist */
+      klappenCardDetailsOpen: { type: Object },
     };
   }
 
@@ -106,6 +108,16 @@ class HKWebApp extends LitElement {
     this.userNotes = localStorage.getItem('hkweb_notes') || '';
     this.safetyNotifyManualDraft = '';
     this.securityInfoPinnedKey = '';
+    this.klappenCardDetailsOpen = {};
+    /** Scroll-Listener auf .content (falls der Bereich selbst scrollt) */
+    this._contentElForScroll = null;
+    this._collapseKlappenDetailsOnScroll = () => {
+      if (this.activeTab !== 'klappen') return;
+      const o = this.klappenCardDetailsOpen;
+      if (!o || !Object.values(o).some(Boolean)) return;
+      this.klappenCardDetailsOpen = {};
+      this.requestUpdate();
+    };
     this._onDocClickSecurityInfo = (e) => {
       if (!this.securityInfoPinnedKey) return;
       const path = e.composedPath();
@@ -296,6 +308,7 @@ class HKWebApp extends LitElement {
     this.handleResize();
     this.handleResize = this.handleResize.bind(this);
     window.addEventListener('resize', this.handleResize);
+    window.addEventListener('scroll', this._collapseKlappenDetailsOnScroll, { passive: true });
     document.addEventListener('click', this._onDocClickSecurityInfo, true);
   }
 
@@ -376,6 +389,11 @@ class HKWebApp extends LitElement {
       window.removeEventListener('focus', this._onVisibilityOrFocus);
     }
     window.removeEventListener('resize', this.handleResize);
+    window.removeEventListener('scroll', this._collapseKlappenDetailsOnScroll);
+    if (this._contentElForScroll) {
+      this._contentElForScroll.removeEventListener('scroll', this._collapseKlappenDetailsOnScroll);
+      this._contentElForScroll = null;
+    }
     document.removeEventListener('click', this._onDocClickSecurityInfo, true);
   }
   
@@ -488,6 +506,21 @@ class HKWebApp extends LitElement {
       this.entityValidation = this.validateAllEntities();
       this.requestUpdate();
     }
+    if (this.settingsReady) {
+      this._attachKlappenScrollCollapseTarget();
+    }
+  }
+
+  /** Zusätzlich zu window: Haupt-Inhaltsbereich, falls dieser scrollbar ist (z. B. eingebettet). */
+  _attachKlappenScrollCollapseTarget() {
+    const el = this.shadowRoot?.querySelector('.content');
+    if (!el || el === this._contentElForScroll) return;
+    if (this._contentElForScroll) {
+      this._contentElForScroll.removeEventListener('scroll', this._collapseKlappenDetailsOnScroll);
+      this._contentElForScroll = null;
+    }
+    this._contentElForScroll = el;
+    el.addEventListener('scroll', this._collapseKlappenDetailsOnScroll, { passive: true });
   }
 
   checkEntityStates() {
@@ -1505,6 +1538,9 @@ class HKWebApp extends LitElement {
   }
 
   setTab(tab) {
+    if (tab !== 'klappen' && this.activeTab === 'klappen') {
+      this.klappenCardDetailsOpen = {};
+    }
     this.activeTab = tab;
   }
 
@@ -1695,24 +1731,76 @@ class HKWebApp extends LitElement {
     this.sidebarAlpha = Number(e.target.value);
   }
 
+  /** Min/Max/Step der Geschwindigkeits-Number-Entity (ESPHome); ohne State: sinnvolle Defaults 0…600. */
+  _getSpeedEntityBounds(k) {
+    if (!k.speedEntity || !this.hass?.states?.[k.speedEntity]?.attributes) {
+      return { min: 0, max: 600, step: 1 };
+    }
+    const a = this.hass.states[k.speedEntity].attributes;
+    return {
+      min: a.min !== undefined ? Number(a.min) : 0,
+      max: a.max !== undefined ? Number(a.max) : 600,
+      step: a.step !== undefined ? Number(a.step) : 1,
+    };
+  }
+
+  /** Aktueller Slider-Wert inkl. HA-State, Override und localStorage-Fallback (alles innerhalb Entity-Min/Max). */
+  _resolveSpeedSliderModel(k) {
+    const { min: speedMin, max: speedMax, step: speedStep } = this._getSpeedEntityBounds(k);
+    let speedValue = null;
+    if (!k.speedEntity) {
+      return { speedMin, speedMax, speedStep, speedValue: null };
+    }
+    let fromHa = this.parseNumericStateFromHass(k.speedEntity);
+    const ovr = this._speedUiOverride[k.id];
+    if (ovr) {
+      if (fromHa !== null && Math.abs(fromHa - ovr.value) < 0.501) {
+        delete this._speedUiOverride[k.id];
+      } else if (Date.now() > ovr.until) {
+        delete this._speedUiOverride[k.id];
+      } else {
+        fromHa = null;
+        speedValue = ovr.value;
+      }
+    }
+    if (speedValue === null) {
+      if (fromHa !== null) {
+        speedValue = Math.max(speedMin, Math.min(speedMax, fromHa));
+        localStorage.setItem(`hkweb_speed_${k.id}`, String(speedValue));
+      } else {
+        const savedSpeed = localStorage.getItem(`hkweb_speed_${k.id}`);
+        const parsed = savedSpeed !== null ? Number(savedSpeed) : null;
+        const fallback =
+          Number.isFinite(parsed) ? parsed : Math.min(400, speedMax);
+        speedValue = Math.max(speedMin, Math.min(speedMax, fallback));
+      }
+    }
+    return { speedMin, speedMax, speedStep, speedValue };
+  }
+
+  _resolveAccelSliderValue(k) {
+    if (!k.accelEntity) return null;
+    const st = this.hass?.states?.[k.accelEntity];
+    if (st?.state !== undefined && st.state !== 'unavailable' && st.state !== 'unknown' && st.state !== '') {
+      const n = Number(st.state);
+      if (Number.isFinite(n)) {
+        const c = Math.max(0, Math.min(100, n));
+        localStorage.setItem(`hkweb_accel_${k.id}`, String(c));
+        return c;
+      }
+    }
+    const savedAccel = localStorage.getItem(`hkweb_accel_${k.id}`);
+    const v = savedAccel !== null ? Number(savedAccel) : 50;
+    return Math.max(0, Math.min(100, Number.isFinite(v) ? v : 50));
+  }
+
   setSpeedPercent(k, e) {
     if (!k.speedEntity || !this.hass) return;
     const raw = Number(e.target.value);
     if (!Number.isFinite(raw)) return;
 
-    const ent = this.hass.states[k.speedEntity];
-    const min = ent?.attributes?.min ?? 0;
-    let max = ent?.attributes?.max ?? 400;
-    const step = ent?.attributes?.step ?? 1;
-    let effectiveMin = min;
-
-    if (k.id === 'hk1' && max <= 400.0001) {
-      const oldMax = max;
-      effectiveMin = oldMax;
-      max = oldMax + 200;
-    }
-
-    const clamped = Math.max(effectiveMin, Math.min(max, raw));
+    const { min, max } = this._getSpeedEntityBounds(k);
+    const clamped = Math.max(min, Math.min(max, raw));
 
     this._speedUiOverride[k.id] = { value: clamped, until: Date.now() + 4000 };
     localStorage.setItem(`hkweb_speed_${k.id}`, String(clamped));
@@ -1802,9 +1890,10 @@ class HKWebApp extends LitElement {
     localStorage.setItem('hkweb_notes', v);
     this._schedulePersistToData();
   }
-  toggleKlappenCardExtra(klappeId) {
-    const cur = !!(this.klappenExtraInfoOpen && this.klappenExtraInfoOpen[klappeId]);
-    this.klappenExtraInfoOpen = { ...this.klappenExtraInfoOpen, [klappeId]: !cur };
+  toggleKlappenCardDetails(klappeId) {
+    const cur = !!(this.klappenCardDetailsOpen && this.klappenCardDetailsOpen[klappeId]);
+    this.klappenCardDetailsOpen = { ...this.klappenCardDetailsOpen, [klappeId]: !cur };
+    this.requestUpdate();
   }
 
   _driveHintKey(statusClass) {
@@ -2047,72 +2136,12 @@ class HKWebApp extends LitElement {
     const zustand = k.zustandEntity ? this.getStatusFromTextSensor(k.zustandEntity) : null;
     const lastAction = k.lastActionEntity ? this.getStatusFromTextSensor(k.lastActionEntity) : null;
     const lastActionWhen = k.lastActionEntity ? this.getEntityLastChangedFormatted(k.lastActionEntity) : null;
-    // Basisspanne „vor Umrechnung“ (wird später bei Bedarf gemappt).
-    // Fallback orientiert sich an der bisherigen Konfiguration (max ~400).
-    let speedMin = 0;
-    let speedMax = 400;
-    let speedStep = 1;
-    if (k.speedEntity && this.hass?.states?.[k.speedEntity]?.attributes) {
-      const a = this.hass.states[k.speedEntity].attributes;
-      if (a.min !== undefined) speedMin = Number(a.min);
-      if (a.max !== undefined) speedMax = Number(a.max);
-      if (a.step !== undefined) speedStep = Number(a.step);
-    }
-
-    // Gewünschte Remap-Regel:
-    // neuer MIN  = alter MAX (aktuell z. B. 400%)
-    // neuer MAX  = alter MAX + 200% (z. B. 600%)
-    // Schutz: Falls HA/ESPHome bereits die neue Spanne liefert (max > ~400),
-    // dann nicht doppelt umrechnen.
-    if (k.id === 'hk1' && speedMax <= 400.0001) {
-      const oldMax = speedMax;
-      speedMin = oldMax;
-      speedMax = oldMax + 200;
-    }
-
-    let speedValue = null;
-    let accelValue = null;
-
-    if (k.speedEntity) {
-      let fromHa = this.parseNumericStateFromHass(k.speedEntity);
-      const ovr = this._speedUiOverride[k.id];
-      if (ovr) {
-        if (fromHa !== null && Math.abs(fromHa - ovr.value) < 0.501) {
-          delete this._speedUiOverride[k.id];
-        } else if (Date.now() > ovr.until) {
-          delete this._speedUiOverride[k.id];
-        } else {
-          fromHa = null;
-          speedValue = ovr.value;
-        }
-      }
-      if (speedValue === null) {
-        if (fromHa !== null) {
-          speedValue = Math.max(speedMin, Math.min(speedMax, fromHa));
-          localStorage.setItem(`hkweb_speed_${k.id}`, String(speedValue));
-        } else {
-          const savedSpeed = localStorage.getItem(`hkweb_speed_${k.id}`);
-          const parsed = savedSpeed !== null ? Number(savedSpeed) : 400;
-          speedValue = Number.isFinite(parsed) ? parsed : 400;
-          speedValue = Math.max(speedMin, Math.min(speedMax, speedValue));
-        }
-      }
-    }
-    
-    if (k.accelEntity) {
-      if (this.hass?.states?.[k.accelEntity]?.state !== undefined) {
-        accelValue = Number(this.hass.states[k.accelEntity].state);
-        // Speichere den aktuellen Wert in localStorage für zukünftige Verwendung
-        localStorage.setItem(`hkweb_accel_${k.id}`, accelValue.toString());
-      } else {
-        // Fallback: Lade aus localStorage
-        const savedAccel = localStorage.getItem(`hkweb_accel_${k.id}`);
-        accelValue = savedAccel !== null ? Number(savedAccel) : 50;
-      }
-    }
 
     const statusClass = this.getStatusClass(status || zustand);
     const displayStatus = status || zustand || 'Unbekannt';
+    const detailsOpen = !!(this.klappenCardDetailsOpen && this.klappenCardDetailsOpen[k.id]);
+    const showHardware =
+      !!(k.endstopObenEntity || k.endstopUntenEntity || k.motorEnableEntity);
 
     return html`
       <div class="glass-card">
@@ -2141,34 +2170,51 @@ class HKWebApp extends LitElement {
                   </div>
                 `
               : ''}
-            <div class="klappen-card-section klappen-card-section--modus">
-              ${this.renderKlappenModusBlock(k)}
+            <div class="klappen-card-section klappen-card-section--expand-toggle">
+              <button
+                type="button"
+                class="klappen-details-toggle"
+                aria-expanded="${detailsOpen ? 'true' : 'false'}"
+                aria-label="Modus und Endschalter &amp; Motor ein- oder ausblenden"
+                @click=${() => this.toggleKlappenCardDetails(k.id)}
+              >
+                <span class="klappen-details-toggle-symbol" aria-hidden="true">${detailsOpen ? '−' : '+'}</span>
+                <span class="klappen-details-toggle-label">Modus &amp; Endschalter / Motor</span>
+              </button>
             </div>
-            ${k.id === 'hk1' &&
-            (k.endstopObenEntity || k.endstopUntenEntity || k.motorEnableEntity)
+            ${detailsOpen
               ? html`
-                  <div class="klappen-card-section klappen-card-section--hardware">
-                    <div class="klappen-card-section-title">Endschalter &amp; Motor</div>
-                    <div class="klappen-hardware-rows">
-                      ${k.endstopObenEntity
-                        ? html`<div class="klappen-hardware-row">
-                            <span class="klappen-hardware-k">Oben</span>
-                            <span>${this.formatHardwareEntityState(k.endstopObenEntity)}</span>
-                          </div>`
-                        : ''}
-                      ${k.endstopUntenEntity
-                        ? html`<div class="klappen-hardware-row">
-                            <span class="klappen-hardware-k">Unten</span>
-                            <span>${this.formatHardwareEntityState(k.endstopUntenEntity)}</span>
-                          </div>`
-                        : ''}
-                      ${k.motorEnableEntity
-                        ? html`<div class="klappen-hardware-row">
-                            <span class="klappen-hardware-k">Motor</span>
-                            <span>${this.formatHardwareEntityState(k.motorEnableEntity)}</span>
-                          </div>`
-                        : ''}
+                  <div class="klappen-card-details-frame">
+                    <div class="klappen-card-section klappen-card-section--modus">
+                      ${this.renderKlappenModusBlock(k)}
                     </div>
+                    ${showHardware
+                      ? html`
+                          <div class="klappen-card-section klappen-card-section--hardware">
+                            <div class="klappen-card-section-title">Endschalter &amp; Motor</div>
+                            <div class="klappen-hardware-rows">
+                              ${k.endstopObenEntity
+                                ? html`<div class="klappen-hardware-row">
+                                    <span class="klappen-hardware-k">Oben</span>
+                                    <span>${this.formatHardwareEntityState(k.endstopObenEntity)}</span>
+                                  </div>`
+                                : ''}
+                              ${k.endstopUntenEntity
+                                ? html`<div class="klappen-hardware-row">
+                                    <span class="klappen-hardware-k">Unten</span>
+                                    <span>${this.formatHardwareEntityState(k.endstopUntenEntity)}</span>
+                                  </div>`
+                                : ''}
+                              ${k.motorEnableEntity
+                                ? html`<div class="klappen-hardware-row">
+                                    <span class="klappen-hardware-k">Motor</span>
+                                    <span>${this.formatHardwareEntityState(k.motorEnableEntity)}</span>
+                                  </div>`
+                                : ''}
+                            </div>
+                          </div>
+                        `
+                      : ''}
                   </div>
                 `
               : ''}
@@ -2198,44 +2244,57 @@ class HKWebApp extends LitElement {
               </button>
             </div>
           ` : ''}
+        </div>
+      </div>
+    `;
+  }
 
-          ${k.id === 'hk1' && (speedValue !== null || accelValue !== null) ? html`
-            <div class="motor-params">
-              <div class="motor-param-group">
-                ${speedValue !== null ? html`
-                  <div class="slider-label">Geschwindigkeit: ${speedValue}%</div>
-                  <div class="slider-row">
-                    <input 
-                      type="range" 
-                      min="${speedMin}" 
-                      max="${speedMax}" 
-                      step="${speedStep}" 
-                      .value=${speedValue} 
-                      @input=${e => this.setSpeedPercent(k, e)}
-                      class="motor-slider"
-                    >
-                    <span class="slider-value">${speedValue}%</span>
-                  </div>
-                ` : ''}
-                
-                ${accelValue !== null ? html`
-                  <div class="slider-label">Beschleunigung: ${accelValue}%</div>
-                  <div class="slider-row">
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max="100" 
-                      step="1" 
-                      .value=${accelValue} 
-                      @input=${e => this.setAccelPercent(k, e)}
-                      class="motor-slider"
-                    >
-                    <span class="slider-value">${accelValue}%</span>
-                  </div>
-                ` : ''}
-              </div>
-            </div>
-          ` : ''}
+  /** Geschwindigkeits- und Beschleunigungs-Slider (Tab Setup, pro Klappe). */
+  _renderSetupMotorSliders(k) {
+    const { speedMin, speedMax, speedStep, speedValue } = this._resolveSpeedSliderModel(k);
+    const accelValue = this._resolveAccelSliderValue(k);
+    const showSpeed = k.speedEntity && speedValue !== null;
+    const showAccel = !!k.accelEntity;
+    if (!showSpeed && !showAccel) return html``;
+    return html`
+      <div class="setup-motor-sliders motor-params">
+        <div class="motor-param-group">
+          ${showSpeed
+            ? html`
+                <div class="slider-label">Geschwindigkeit (${speedMin}–${speedMax} %)</div>
+                <div class="slider-row">
+                  <span class="slider-tick slider-tick--min">${speedMin}</span>
+                  <input
+                    type="range"
+                    min="${speedMin}"
+                    max="${speedMax}"
+                    step="${speedStep}"
+                    .value=${speedValue}
+                    @input=${(e) => this.setSpeedPercent(k, e)}
+                    class="motor-slider"
+                  />
+                  <span class="slider-tick slider-tick--max">${speedMax}</span>
+                  <span class="slider-value">${speedValue}%</span>
+                </div>
+              `
+            : ''}
+          ${showAccel
+            ? html`
+                <div class="slider-label">Beschleunigung: ${accelValue}%</div>
+                <div class="slider-row">
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    .value=${accelValue}
+                    @input=${(e) => this.setAccelPercent(k, e)}
+                    class="motor-slider"
+                  />
+                  <span class="slider-value">${accelValue}%</span>
+                </div>
+              `
+            : ''}
         </div>
       </div>
     `;
@@ -2703,6 +2762,7 @@ class HKWebApp extends LitElement {
                   ${this.renderEntityInput(k.id, 'speedEntity', 'Geschwindigkeit (%)', k.speedEntity, validation.speedEntity)}
                   ${this.renderEntityInput(k.id, 'accelEntity', 'Beschleunigung', k.accelEntity, validation.accelEntity)}
                   ${this.renderEntityInput(k.id, 'motorEnableEntity', 'Motor Enable', k.motorEnableEntity, validation.motorEnableEntity)}
+                  ${this._renderSetupMotorSliders(k)}
                 </div>
               </div>
             </div>
@@ -3919,6 +3979,66 @@ class HKWebApp extends LitElement {
         border-color: rgba(39, 201, 63, 0.2);
         background: rgba(39, 201, 63, 0.06);
       }
+      .klappen-card-section--expand-toggle {
+        padding: 0;
+        overflow: hidden;
+      }
+      .klappen-details-toggle {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 12px 14px;
+        margin: 0;
+        border: none;
+        border-radius: 11px;
+        background: rgba(255, 255, 255, 0.18);
+        color: var(--liq-text, #2a2e3a);
+        font: inherit;
+        font-size: 0.92rem;
+        font-weight: 600;
+        cursor: pointer;
+        box-sizing: border-box;
+        transition: background 0.2s, color 0.2s;
+      }
+      .klappen-details-toggle:hover {
+        background: rgba(0, 122, 255, 0.14);
+        color: #007aff;
+      }
+      .klappen-details-toggle:focus-visible {
+        outline: 2px solid rgba(0, 122, 255, 0.55);
+        outline-offset: 2px;
+      }
+      .klappen-details-toggle-symbol {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 1.75rem;
+        height: 1.75rem;
+        font-size: 1.35rem;
+        font-weight: 700;
+        line-height: 1;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.38);
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        color: var(--liq-text, #2a2e3a);
+      }
+      .klappen-details-toggle-label {
+        text-align: center;
+      }
+      .klappen-card-details-frame {
+        width: 100%;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 14px;
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.32);
+        background: rgba(255, 255, 255, 0.1);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+      }
       .klappen-card-section-title {
         font-size: 0.7rem;
         font-weight: 700;
@@ -4349,6 +4469,24 @@ class HKWebApp extends LitElement {
         font-size: 1rem;
         opacity: 0.7;
         color: var(--liq-text, #2a2e3a);
+      }
+      .setup-motor-sliders {
+        margin-top: 14px;
+      }
+      .slider-tick {
+        flex-shrink: 0;
+        font-size: 0.82rem;
+        opacity: 0.65;
+        font-variant-numeric: tabular-nums;
+        color: var(--liq-text, #2a2e3a);
+      }
+      .slider-tick--min {
+        min-width: 2.25em;
+        text-align: left;
+      }
+      .slider-tick--max {
+        min-width: 2.25em;
+        text-align: center;
       }
       .log-subtabs {
         display: flex;
