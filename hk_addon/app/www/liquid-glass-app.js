@@ -36,7 +36,7 @@ if (typeof window !== 'undefined' && !window.__hkwebBfCacheBound) {
 
 // --- HK WEB App (Fallout Theme) ---
 class HKWebApp extends LitElement {
-  static VERSION = '2.1.19';
+  static VERSION = '2.1.20';
 
   /** Sidebar: im Add-on = Git/config (window.__HK_ADDON_VERSION__), sonst App-Bundle-Version. */
   static getDisplayVersion() {
@@ -418,6 +418,7 @@ class HKWebApp extends LitElement {
     return [
       'statusEntity', 'zustandEntity', 'lastActionEntity',
       'endstopObenEntity', 'endstopUntenEntity',
+      'wifiSignalEntity',
       'buttonOeffnen', 'buttonSchliessen', 'buttonStop', 'buttonReset', 'buttonZentrale',
       'speedEntity', 'accelEntity', 'motorEnableEntity',
     ];
@@ -553,6 +554,7 @@ class HKWebApp extends LitElement {
       lastActionEntity: `sensor.${d}_${d}_letzte_aktion`,
       endstopObenEntity: `sensor.${d}_${d}_endschalter_oben_status`,
       endstopUntenEntity: `sensor.${d}_${d}_endschalter_unten_status`,
+      wifiSignalEntity: `sensor.${d}_${d}_wifi_signal`,
       buttonOeffnen: `button.${d}_${d}_offnen`,
       buttonSchliessen: `button.${d}_${d}_schliessen`,
       buttonStop: `button.${d}_${d}_stop`,
@@ -580,6 +582,7 @@ class HKWebApp extends LitElement {
         lastActionEntity: '',
         endstopObenEntity: '',
         endstopUntenEntity: '',
+        wifiSignalEntity: '',
         // Buttons
         buttonOeffnen: '',
         buttonSchliessen: '',
@@ -601,6 +604,7 @@ class HKWebApp extends LitElement {
         lastActionEntity: '',
         endstopObenEntity: '',
         endstopUntenEntity: '',
+        wifiSignalEntity: '',
         // Buttons
         buttonOeffnen: '',
         buttonSchliessen: '',
@@ -621,6 +625,7 @@ class HKWebApp extends LitElement {
     const entityFields = [
       'statusEntity', 'zustandEntity', 'lastActionEntity',
       'endstopObenEntity', 'endstopUntenEntity',
+      'wifiSignalEntity',
       'buttonOeffnen', 'buttonSchliessen', 'buttonStop', 'buttonReset', 'buttonZentrale',
       'speedEntity', 'accelEntity', 'motorEnableEntity',
     ];
@@ -673,6 +678,7 @@ class HKWebApp extends LitElement {
       lastActionEntity: k.lastActionEntity || '',
       endstopObenEntity: k.endstopObenEntity || '',
       endstopUntenEntity: k.endstopUntenEntity || '',
+      wifiSignalEntity: k.wifiSignalEntity || '',
       buttonOeffnen: k.buttonOeffnen || '',
       buttonSchliessen: k.buttonSchliessen || '',
       buttonStop: k.buttonStop || '',
@@ -795,6 +801,7 @@ class HKWebApp extends LitElement {
       { key: 'lastActionEntity', label: 'Letzte Aktion', category: 'Text-Sensoren' },
       { key: 'endstopObenEntity', label: 'Endschalter Oben', category: 'Text-Sensoren' },
       { key: 'endstopUntenEntity', label: 'Endschalter Unten', category: 'Text-Sensoren' },
+      { key: 'wifiSignalEntity', label: 'WLAN-Signal (Qualität)', category: 'Text-Sensoren' },
       { key: 'buttonOeffnen', label: 'Öffnen', category: 'Buttons' },
       { key: 'buttonSchliessen', label: 'Schließen', category: 'Buttons' },
       { key: 'buttonStop', label: 'Stop', category: 'Buttons' },
@@ -872,6 +879,13 @@ class HKWebApp extends LitElement {
       push(`binary_sensor.${kid}_${kid}_endschalter_${pos}`);
     }
 
+    if (fieldKey === 'wifiSignalEntity') {
+      push(`sensor.${kid}_${kid}_wifi_signal`);
+      push(`sensor.${kid}_${kid}_wlan_signal`);
+      this._pushEsphomePrefixedSensorForKid(push, kid, 'wifi_signal');
+      this._pushEsphomePrefixedSensorForKid(push, kid, 'wlan_signal');
+    }
+
     if (rest === `${kid}_zustand_${kid}`) {
       push(`${domain}.${kid}_${kid}_zustand`);
     }
@@ -884,15 +898,60 @@ class HKWebApp extends LitElement {
       push(`button.${kid}_treiber_reset_pulse`);
     }
 
+    /* ESPHome: Präfix = HA-Geräteslug (z. B. huhnerklappe_1), dann Node hk1 → button.huhnerklappe_1_hk1_offnen */
+    if (fieldKey === 'buttonOeffnen') {
+      this._pushEsphomePrefixedButtonMatches(push, kid, ['offnen', 'oeffnen']);
+    }
+    if (fieldKey === 'buttonSchliessen') {
+      this._pushEsphomePrefixedButtonMatches(push, kid, ['schliessen']);
+    }
+    if (fieldKey === 'buttonStop') {
+      this._pushEsphomePrefixedButtonMatches(push, kid, ['stop']);
+    }
+
     return cands;
   }
 
-  _pickFirstExistingEntityId(candidates) {
-    if (!this.hass?.states || !candidates?.length) return null;
-    for (const id of candidates) {
-      if (this.hass.states.hasOwnProperty(id)) return id;
+  /** sensor.*_<kid>_<suffix> (z. B. ESPHome-Geräteslug + Node). */
+  _pushEsphomePrefixedSensorForKid(push, kid, suffix) {
+    const states = this.hass?.states;
+    if (!states || !suffix) return;
+    const escK = this._escapeRegExp(kid);
+    const escS = this._escapeRegExp(String(suffix));
+    const re = new RegExp(`^sensor\\.[a-z0-9_]+_${escK}_${escS}$`);
+    const ids = [];
+    for (const id of Object.keys(states)) {
+      if (re.test(id)) ids.push(id);
     }
-    return null;
+    ids.sort().forEach((id) => push(id));
+  }
+
+  /** Alle button.* in hass.states, die auf …_<kid>_<suffix> passen (mehrere ESPHome-Namensmuster). */
+  _pushEsphomePrefixedButtonMatches(push, kid, suffixes) {
+    const states = this.hass?.states;
+    if (!states || !suffixes?.length) return;
+    const escK = this._escapeRegExp(kid);
+    const ids = new Set();
+    for (const suf of suffixes) {
+      const re = new RegExp(`^button\\.[a-z0-9_]+_${escK}_${this._escapeRegExp(suf)}$`);
+      for (const id of Object.keys(states)) {
+        if (re.test(id)) ids.add(id);
+      }
+    }
+    [...ids].sort().forEach((id) => push(id));
+  }
+
+  _pickFirstExistingEntityId(candidates) {
+    const states = this.hass?.states;
+    if (!states || !candidates?.length) return null;
+    const found = [];
+    for (const id of candidates) {
+      if (states.hasOwnProperty(id)) found.push(id);
+    }
+    if (!found.length) return null;
+    // Bevorzugt nicht-unavailable (alte „restored“-IDs nach ESPHome-Gerätenamens-Wechsel überspringen)
+    const ok = found.filter((id) => states[id]?.state !== 'unavailable');
+    return (ok.length ? ok : found)[0];
   }
 
   /** Gleiche Ergebnisstruktur wie die async Prüfung, ohne Verzögerung (nach Auto-Reparatur). */
@@ -1041,6 +1100,7 @@ class HKWebApp extends LitElement {
         lastActionEntity: k.lastActionEntity ? this.checkEntityExists(k.lastActionEntity) : null,
         endstopObenEntity: k.endstopObenEntity ? this.checkEntityExists(k.endstopObenEntity) : null,
         endstopUntenEntity: k.endstopUntenEntity ? this.checkEntityExists(k.endstopUntenEntity) : null,
+        wifiSignalEntity: k.wifiSignalEntity ? this.checkEntityExists(k.wifiSignalEntity) : null,
         buttonOeffnen: k.buttonOeffnen ? this.checkEntityExists(k.buttonOeffnen) : null,
         buttonSchliessen: k.buttonSchliessen ? this.checkEntityExists(k.buttonSchliessen) : null,
         buttonStop: k.buttonStop ? this.checkEntityExists(k.buttonStop) : null,
@@ -1518,10 +1578,12 @@ class HKWebApp extends LitElement {
       root.style.setProperty('--liq-bg', 'linear-gradient(135deg, #23272f 0%, #2d3440 100%)');
       root.style.setProperty('--liq-text', '#f3f6fa');
       root.style.setProperty('--liq-shadow', 'rgba(0,0,0,0.35)');
+      root.style.setProperty('--klappen-wifi-inactive', 'rgba(255,255,255,0.22)');
     } else {
       root.style.setProperty('--liq-bg', 'linear-gradient(135deg, #e3e9f3 0%, #cfd8e6 100%)');
       root.style.setProperty('--liq-text', '#2a2e3a');
       root.style.setProperty('--liq-shadow', 'rgba(31, 38, 135, 0.18)');
+      root.style.setProperty('--klappen-wifi-inactive', 'rgba(60,60,67,0.28)');
     }
   }
 
@@ -1874,6 +1936,136 @@ class HKWebApp extends LitElement {
     return String(raw);
   }
 
+  /** WLAN-Sensor: dBm (ESPHome wifi_signal) oder 0–100 %. */
+  _parseWifiSignalModelFromEntity(entityId) {
+    if (!entityId || !this.hass?.states?.[entityId]) return null;
+    const st = this.hass.states[entityId];
+    const raw = st.state;
+    if (raw === undefined || raw === null || raw === 'unavailable' || raw === 'unknown' || raw === '') {
+      return null;
+    }
+    const unit = String(st.attributes?.unit_of_measurement || '').toLowerCase();
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return null;
+    if (unit.includes('dbm') || (n <= 0 && n >= -100)) {
+      return { kind: 'dbm', value: n };
+    }
+    if (unit.includes('%')) {
+      return { kind: 'percent', value: Math.max(0, Math.min(100, n)) };
+    }
+    if (n >= 0 && n <= 100) return { kind: 'percent', value: n };
+    if (n < 0) return { kind: 'dbm', value: n };
+    return null;
+  }
+
+  /** iOS-ähnliche Farbstufen: grün → gelb → orange → rot (3 Bögen + Punkt, Lucide-Pfade). */
+  _wifiArcColorsFromModel(model) {
+    const inactive = 'var(--klappen-wifi-inactive)';
+    if (!model) {
+      return {
+        outer: inactive,
+        mid: inactive,
+        inner: inactive,
+        dot: inactive,
+        label: '—',
+        aria: 'WLAN: keine Daten',
+      };
+    }
+    let bars;
+    let c;
+    let label;
+    if (model.kind === 'dbm') {
+      const db = model.value;
+      label = `${Math.round(db)} dBm`;
+      if (db >= -55) {
+        bars = 3;
+        c = '#34C759';
+      } else if (db >= -67) {
+        bars = 2;
+        c = '#FFCC00';
+      } else if (db >= -78) {
+        bars = 2;
+        c = '#FF9500';
+      } else {
+        bars = 1;
+        c = '#FF3B30';
+      }
+    } else {
+      const p = model.value;
+      label = `${Math.round(p)} %`;
+      if (p >= 70) {
+        bars = 3;
+        c = '#34C759';
+      } else if (p >= 45) {
+        bars = 2;
+        c = '#FFCC00';
+      } else if (p >= 20) {
+        bars = 2;
+        c = '#FF9500';
+      } else {
+        bars = 1;
+        c = '#FF3B30';
+      }
+    }
+    return {
+      outer: bars >= 3 ? c : inactive,
+      mid: bars >= 2 ? c : inactive,
+      inner: bars >= 1 ? c : inactive,
+      dot: bars >= 1 ? c : inactive,
+      label,
+      aria: `WLAN-Signal ${label}`,
+    };
+  }
+
+  _renderWifiSignalBlock(k) {
+    const id = k.wifiSignalEntity;
+    if (!id || !String(id).trim()) return html``;
+    const model = this._parseWifiSignalModelFromEntity(id);
+    const v = this._wifiArcColorsFromModel(model);
+    return html`
+      <div class="klappen-wifi-wrap" title="Verbindungsqualität: ${v.label}" aria-label="${v.aria}">
+        <svg
+          class="klappen-wifi-svg"
+          viewBox="0 0 24 24"
+          width="32"
+          height="32"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+        >
+          <path
+            d="M2 8.82a15 15 0 0 1 20 0"
+            stroke="${v.outer}"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M5 12.859a10 10 0 0 1 14 0"
+            stroke="${v.mid}"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M8.5 16.429a5 5 0 0 1 7 0"
+            stroke="${v.inner}"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M12 20h.01"
+            stroke="${v.dot}"
+            stroke-width="2.5"
+            stroke-linecap="round"
+          />
+        </svg>
+        <span class="klappen-wifi-label">${v.label}</span>
+      </div>
+    `;
+  }
+
   getStatusClass(status) {
     if (!status) return '';
     const statusLower = status.toLowerCase();
@@ -2146,13 +2338,16 @@ class HKWebApp extends LitElement {
     return html`
       <div class="glass-card">
         <div class="klappen-card-content">
-          <input 
-            type="text" 
-            value="${k.name}" 
-            class="klappen-name-input"
-            @change=${e => this.handleKlappenNameChange(k.id, e)} 
-          />
-          
+          <div class="klappen-card-title-row">
+            <input
+              type="text"
+              value="${k.name}"
+              class="klappen-name-input"
+              @change=${(e) => this.handleKlappenNameChange(k.id, e)}
+            />
+            ${this._renderWifiSignalBlock(k)}
+          </div>
+
           <div class="status-indicator ${statusClass}">
             ${displayStatus}
           </div>
@@ -2746,6 +2941,13 @@ class HKWebApp extends LitElement {
                   ${this.renderEntityInput(k.id, 'lastActionEntity', 'Letzte Aktion', k.lastActionEntity, validation.lastActionEntity)}
                   ${this.renderEntityInput(k.id, 'endstopObenEntity', 'Endschalter Oben', k.endstopObenEntity, validation.endstopObenEntity)}
                   ${this.renderEntityInput(k.id, 'endstopUntenEntity', 'Endschalter Unten', k.endstopUntenEntity, validation.endstopUntenEntity)}
+                  ${this.renderEntityInput(
+                    k.id,
+                    'wifiSignalEntity',
+                    'WLAN-Signal (Qualität)',
+                    k.wifiSignalEntity,
+                    validation.wifiSignalEntity,
+                  )}
                 </div>
 
                 <div class="setup-section">
@@ -3894,6 +4096,45 @@ class HKWebApp extends LitElement {
         align-items: center;
         --klappen-inner-width: 90%;
       }
+      .klappen-card-title-row {
+        display: flex;
+        flex-direction: row;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+        width: var(--klappen-inner-width, 90%);
+        max-width: 100%;
+        box-sizing: border-box;
+        margin-bottom: 12px;
+      }
+      .klappen-card-title-row .klappen-name-input {
+        margin-bottom: 0;
+        width: 100%;
+        max-width: 100%;
+      }
+      .klappen-wifi-wrap {
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        padding-top: 4px;
+        min-width: 44px;
+      }
+      .klappen-wifi-svg {
+        display: block;
+      }
+      .klappen-wifi-label {
+        font-size: 0.65rem;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        color: var(--liq-text, #2a2e3a);
+        opacity: 0.72;
+        max-width: 4.2rem;
+        text-align: center;
+        line-height: 1.15;
+        word-break: break-all;
+      }
       .klappen-name-input {
         font-size: 1.5rem;
         font-weight: 700;
@@ -3905,6 +4146,9 @@ class HKWebApp extends LitElement {
         background: transparent;
         color: var(--liq-text, #2a2e3a);
         outline: none;
+        flex: 1 1 auto;
+        min-width: 0;
+        box-sizing: border-box;
       }
       .status-indicator {
         display: flex;

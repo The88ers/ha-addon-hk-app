@@ -18,7 +18,7 @@ Nach dem Start zeigt die Statuszeile **„HA-API bereit“**, wenn die Verbindun
 
 | Reiter | Inhalt (Kurz) |
 |--------|----------------|
-| **Klappen** | Karten pro Klappe: Status, Tasten, Fahr-Slider, Modus-Übersicht |
+| **Klappen** | Karten pro Klappe: Status, **WLAN-Signal** (optional), Tasten, Fahr-Slider, Modus-Übersicht |
 | **Modi** | Pro Klappe: Modus wählen und Zeiten/Offsets pflegen |
 | **Einstellungen** | Darstellung, Theme, Export/Import, Hinweis auf persistente Speicherung |
 | **Sicherheit** | Globale Schalter, Vollzugsprüfung, **Benachrichtigung bei Störung**, Notify-Empfänger, Prüfzeit, **Sicherheitsschließzeiten** pro Klappe |
@@ -27,6 +27,16 @@ Nach dem Start zeigt die Statuszeile **„HA-API bereit“**, wenn die Verbindun
 | **Log** | Ereignisanzeige in der App |
 
 Einstellungen werden im Add-on nach **`/data/hkweb-settings.json`** geschrieben und beim Neustart wieder geladen.
+
+### 2.1 WLAN-Signal auf der Klappenkarte
+
+Unter **Setup → Text-Sensoren** können Sie pro Klappe ein **WLAN-Signal (Qualität)**-Sensor eintragen (typisch ESPHome **`wifi_signal`**, z. B. `sensor.hk1_hk1_wifi_signal` in **dBm**, oder ein Sensor in **%**). Die Kachel zeigt dann ein **WLAN-Symbol** mit farbigen Bögen (grün = gut, gelb/orange = mittel, rot = schwach) und den Wert als Kurztext.
+
+### 2.2 Wenn sich Entity-IDs plötzlich ändern (ESPHome / Gerätename)
+
+Home Assistant und ESPHome bilden `entity_id`s u. a. aus dem **Gerätenamen** in HA (z. B. „Hühnerklappe 1“ → Slug `huhnerklappe_1`) und dem Knoten (`hk1`). Dann heißen Buttons z. B. **`button.huhnerklappe_1_hk1_offnen`** statt der kürzeren Projekt-Baseline **`button.hk1_hk1_offnen`**.
+
+Nach **Firmware-Update**, **Neu-Einrichten** der Integration oder **Umbenennen** des Geräts entstehen oft **neue** Entities; die alten erscheinen als **nicht verfügbar** oder **restored** (rote Kennzeichnung). **Add-on (Setup)** und **Dashboards** müssen dann auf die **neuen, aktiven** Entities zeigen. Im Add-on helfen **Entities prüfen** und **Auto-Reparatur**; in Lovelace die Karten durch neue Entity-Auswahl ersetzen bzw. alte Einträge entfernen.
 
 ---
 
