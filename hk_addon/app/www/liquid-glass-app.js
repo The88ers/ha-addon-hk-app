@@ -5,6 +5,7 @@ import {
   fetchAddonLogs,
   fetchSunTimesForPlz,
 } from './addon-persist.mjs';
+import { vollzugOpenEndstopsOk, vollzugCloseEndstopsOk } from './safety-gates.mjs';
 
 // Vault-Tec Terminal Theme - verwendet system fonts (Courier New, Consolas)
 
@@ -35,7 +36,7 @@ if (typeof window !== 'undefined' && !window.__hkwebBfCacheBound) {
 
 // --- HK WEB App (Fallout Theme) ---
 class HKWebApp extends LitElement {
-  static VERSION = '2.1.18';
+  static VERSION = '2.1.19';
 
   /** Sidebar: im Add-on = Git/config (window.__HK_ADDON_VERSION__), sonst App-Bundle-Version. */
   static getDisplayVersion() {
@@ -1601,6 +1602,10 @@ class HKWebApp extends LitElement {
       if (!notifyTargets.length) return;
 
       const seconds = delayS;
+      const dirLabel = direction === 'open' ? 'Öffnen' : 'Schließen';
+      this.addLogEntry(
+        `Vollzugsprüfung (${dirLabel}): ${klappe.name || kid} — Zustand wird in ${seconds} s geprüft und ggf. per Notify gemeldet.`,
+      );
       setTimeout(() => {
         this._checkManualSafetyAndNotify({ klappe, direction, notifyTargets }).catch((e) => {
           this.addLogEntry(`✗ Manual Safety-Check Fehler: ${String(e?.message || e)}`);
@@ -1627,8 +1632,6 @@ class HKWebApp extends LitElement {
       return states[entityId]?.state ?? null;
     };
 
-    const endstopObenState = getState(endstopObenEntity);
-    const endstopUntenState = getState(endstopUntenEntity);
     const statusState = getState(statusEntity);
     const zustandState = getState(zustandEntity);
 
@@ -1638,24 +1641,21 @@ class HKWebApp extends LitElement {
     const expectedOpen = 'offen';
     const expectedClose = 'geschlossen';
 
-    let endstopObenOk = true;
-    let endstopUntenOk = true;
     let statusOk = true;
     let zustandOk = true;
+    let endstopsOk = true;
 
     if (direction === 'open') {
-      endstopObenOk = endstopObenEntity ? endstopObenState === 'Aktiv' : true;
-      endstopUntenOk = endstopUntenEntity ? endstopUntenState === 'Inaktiv' : true;
+      endstopsOk = vollzugOpenEndstopsOk(getState, endstopObenEntity, endstopUntenEntity);
       statusOk = statusEntity ? statusLower.includes(expectedOpen) : true;
       zustandOk = zustandEntity ? zustandLower.includes(expectedOpen) : true;
     } else {
-      endstopObenOk = endstopObenEntity ? endstopObenState === 'Inaktiv' : true;
-      endstopUntenOk = endstopUntenEntity ? endstopUntenState === 'Aktiv' : true;
+      endstopsOk = vollzugCloseEndstopsOk(getState, endstopObenEntity, endstopUntenEntity);
       statusOk = statusEntity ? statusLower.includes(expectedClose) : true;
       zustandOk = zustandEntity ? zustandLower.includes(expectedClose) : true;
     }
 
-    const ok = endstopObenOk && endstopUntenOk && statusOk && zustandOk;
+    const ok = endstopsOk && statusOk && zustandOk;
     const zustandTxt = this._formatKlappeZustandSummary(klappe);
     const list = Array.isArray(notifyTargets) ? notifyTargets : [];
 
@@ -2222,14 +2222,14 @@ class HKWebApp extends LitElement {
 
           <div class="button-group-main">
             ${k.buttonOeffnen ? html`
-              <button class="glass-btn" @click=${() => this._callButtonService(k.buttonOeffnen)}>
+              <button class="glass-btn" @click=${() => this._callButtonService(k.buttonOeffnen, { klappe: k, direction: 'open' })}>
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l-8 8h6v8h4v-8h6z"/></svg>
                 Öffnen
               </button>
             ` : ''}
             
             ${k.buttonSchliessen ? html`
-              <button class="glass-btn" @click=${() => this._callButtonService(k.buttonSchliessen)}>
+              <button class="glass-btn" @click=${() => this._callButtonService(k.buttonSchliessen, { klappe: k, direction: 'close' })}>
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20l8-8h-6V4h-4v8H4z"/></svg>
                 Schließen
               </button>
@@ -2970,6 +2970,7 @@ class HKWebApp extends LitElement {
 
   renderSicherheit() {
     const warnEnabled = localStorage.getItem('hkweb_sicherheit_schliesszeiten_warn_enabled') === 'true';
+    const stoerungNotifyEnabled = localStorage.getItem('hkweb_sicherheit_stoerung_notify_enabled') !== 'false';
     const safetyGlobal =
       localStorage.getItem('hkweb_sicherheit_safety_close_global') == null ||
       localStorage.getItem('hkweb_sicherheit_safety_close_global') === 'true';
@@ -3050,8 +3051,13 @@ class HKWebApp extends LitElement {
                         dem ausgelesenen Klappenzustand. Wenn der geplante Button-Aufruf schon scheitert, gibt es ebenfalls eine Meldung mit Zustandstext.
                       </p>
                       <p>
-                        <strong>Manuelle</strong> Bedienung (Slider/Tasten): zusätzlich im jeweiligen Modus die Checkbox „Vollzugsprüfung bei manueller Bedienung“ aktivieren
-                        — und diese globale Option hier eingeschaltet lassen sowie Notify-Empfänger eintragen.
+                        <strong>Manuelle</strong> Bedienung: Tasten <strong>Öffnen</strong>/<strong>Schließen</strong> und Fahr-Slider lösen dieselbe Prüfung aus wie der
+                        Zeitplan — im jeweiligen Modus die Checkbox „Vollzugsprüfung bei manueller Bedienung“ aktivieren, diese Option hier <strong>an</strong> lassen und
+                        Notify-Empfänger eintragen.
+                      </p>
+                      <p>
+                        Endschalter werden wie in Home Assistant gelesen: u. a. <code class="inline-code">on</code>/<code class="inline-code">off</code> (binary_sensor)
+                        oder Text <strong>Aktiv</strong>/<strong>Inaktiv</strong> (ESPHome).
                       </p>
                     `,
                   )}
@@ -3059,6 +3065,43 @@ class HKWebApp extends LitElement {
               </label>
             </div>
             <div class="info-text">Kurz: Rückmeldung, ob Öffnen/Schließen wirklich angekommen ist. Details über das <strong>(i)</strong>.</div>
+          </div>
+
+          <div class="settings-section" style="margin-top:12px">
+            <div class="hk-sicherheit-option-row">
+              <label class="checkbox-label-large hk-sicherheit-checkbox-label">
+                <input
+                  type="checkbox"
+                  .checked=${stoerungNotifyEnabled}
+                  @change=${(e) => {
+                    localStorage.setItem(
+                      'hkweb_sicherheit_stoerung_notify_enabled',
+                      e.target.checked ? 'true' : 'false',
+                    );
+                    this._schedulePersistToData();
+                    this.requestUpdate();
+                  }}
+                />
+                <span class="hk-sicherheit-checkbox-text-with-info"
+                  >Benachrichtigung bei Störung${this._renderSecurityInfoIcon(
+                    'sec-stoerung',
+                    html`
+                      <p>
+                        Wenn der <strong>Status</strong> oder <strong>Zustand</strong> einer Klappe (im Setup eingetragene Text-Sensoren) <strong>Störung</strong> enthält,
+                        sendet das <strong>Add-on im Hintergrund</strong> (ca. alle 45 Sekunden) <strong>einmal pro Störungsfall</strong> eine Push-Nachricht an die
+                        unten eingetragenen Notify-Empfänger.
+                      </p>
+                      <p>
+                        Nach Aufhebung der Störung und erneutem Auftreten wird wieder benachrichtigt. Ohne eingetragene Empfänger erfolgt kein Versand.
+                      </p>
+                    `,
+                  )}
+                </span>
+              </label>
+            </div>
+            <div class="info-text">
+              Läuft im Add-on-Scheduler (unabhängig davon, ob die Web-Oberfläche offen ist). Nutzt dieselben Notify-Ziele wie die übrigen Sicherheitsmeldungen.
+            </div>
           </div>
 
           <div class="settings-section sicherheit-messages-legend" style="margin-top:16px">
@@ -3078,6 +3121,9 @@ class HKWebApp extends LitElement {
                     <p>
                       <strong>Zweiter Block:</strong> Meldungen der <strong>Vollzugsprüfung</strong> nach Zeitplan, Tag/Nacht oder manueller Bedienung (Erfolg bzw.
                       Fehler mit Klappenzustand).
+                    </p>
+                    <p>
+                      <strong>Dritter Block:</strong> <strong>STÖRUNG</strong>, wenn Status- oder Zustandstext „Störung“ meldet (Add-on-Überwachung, wenn aktiviert).
                     </p>
                   `,
                 )}
@@ -3140,6 +3186,18 @@ class HKWebApp extends LitElement {
                 </p>
               </li>
             </ul>
+            <div class="sicherheit-msg-section-title sicherheit-msg-section-title--spaced">Störung</div>
+            <p class="sicherheit-msg-section-lead">
+              Add-on prüft zyklisch Status/Zustand; einmal pro neuem Störungsfall, wenn die Option aktiv ist und Notify-Empfänger eingetragen sind.
+            </p>
+            <ul class="sicherheit-msg-list">
+              <li class="sicherheit-msg-item">
+                <div class="sicherheit-msg-sample">STÖRUNG: Klappe …. Status: …; Zustand: …; …</div>
+                <p class="sicherheit-msg-explainer">
+                  Mindestens einer der Texte enthält „Störung“ (oder „storung“). Nach Behebung und erneutem Auftreten folgt wieder eine Meldung.
+                </p>
+              </li>
+            </ul>
           </div>
 
           <div class="settings-section" style="margin-top:12px">
@@ -3149,8 +3207,8 @@ class HKWebApp extends LitElement {
                   'sec-notify',
                   html`
                     <p>
-                      Hier tragen Sie die <strong>notify.*</strong>-Dienste ein, an die alle Sicherheits- und Vollzugsmeldungen gehen sollen (z. B. Companion-App auf dem
-                      iPhone).
+                      Hier tragen Sie die <strong>notify.*</strong>-Dienste ein, an die alle Sicherheits-, Vollzugs- und <strong>Störungs</strong>meldungen gehen sollen
+                      (z. B. Companion-App auf dem iPhone).
                     </p>
                     <p>
                       <strong>Ohne Empfänger</strong> werden keine Push-Benachrichtigungen gesendet; der Scheduler führt die Prüfungen und Button-Aufrufe trotzdem aus.

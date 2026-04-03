@@ -21,7 +21,7 @@ Nach dem Start zeigt die Statuszeile **„HA-API bereit“**, wenn die Verbindun
 | **Klappen** | Karten pro Klappe: Status, Tasten, Fahr-Slider, Modus-Übersicht |
 | **Modi** | Pro Klappe: Modus wählen und Zeiten/Offsets pflegen |
 | **Einstellungen** | Darstellung, Theme, Export/Import, Hinweis auf persistente Speicherung |
-| **Sicherheit** | Globale Schalter, Vollzugsprüfung, Notify-Empfänger, Prüfzeit, **Sicherheitsschließzeiten** pro Klappe |
+| **Sicherheit** | Globale Schalter, Vollzugsprüfung, **Benachrichtigung bei Störung**, Notify-Empfänger, Prüfzeit, **Sicherheitsschließzeiten** pro Klappe |
 | **Setup** | Zuordnung der Home-Assistant-Entities (Buttons, Sensoren, Motor) |
 | **Notizen** | Freitext |
 | **Log** | Ereignisanzeige in der App |
@@ -55,12 +55,12 @@ Einstellungen werden im Add-on nach **`/data/hkweb-settings.json`** geschrieben 
 
 Für **Sicherheitsprüfungen** wertet das System (sofern im Setup eingetragen) u. a. aus:
 
-- **Endschalter oben/unten** (Zustände **`Aktiv`** / **`Inaktiv`**),
+- **Endschalter oben/unten** — sowohl **Text** wie bei ESPHome (**`Aktiv`** / **`Inaktiv`**) als auch **`binary_sensor`** mit **`on`** / **`off`** werden erkannt,
 - **Status-** und **Zustandssensoren** (Texte mit **`offen`** bzw. **`geschlossen`** im Kleinschreibung-Sinn).
 
-**Öffnen gilt als erfolgreich**, wenn (für jede konfigurierte Quelle) u. a. gilt: Endschalter oben **Aktiv**, unten **Inaktiv**, Status/Zustand enthalten „offen“.
+**Öffnen gilt als erfolgreich**, wenn (für jede konfigurierte Quelle) u. a. gilt: Endschalter oben **betätigt** (z. B. `on` oder „Aktiv“), unten **nicht betätigt** (`off` / „Inaktiv“), Status/Zustand enthalten „offen“.
 
-**Schließen gilt als erfolgreich**, wenn u. a.: oben **Inaktiv**, unten **Aktiv**, Status/Zustand enthalten „geschlossen“.
+**Schließen gilt als erfolgreich**, wenn u. a.: oben **nicht betätigt**, unten **betätigt**, Status/Zustand enthalten „geschlossen“.
 
 Ist eine Entity **nicht** konfiguriert, entfällt diese Prüfung für diese Klappe (wird als „OK“ gewertet).
 
@@ -80,11 +80,15 @@ In **Benachrichtigungen** wird der Klappenzustand als kurzer Text aus den konfig
 ### 5.2 Vollzugsprüfung (Zeitpläne, Tag/Nacht und optional manuell)
 
 - Schalter **„Vollzugsprüfung“** unter **Sicherheit**: Nach jedem **geplanten** Öffnen/Schließen (Modus **Zeitpläne** oder **Tag/Nacht**) wartet das Add-on die **Prüfzeit** und sendet eine Benachrichtigung, ob der **erwartete Zustand** erreicht wurde (**Erfolg** oder **Misserfolg** mit Zustandstext).
-- **Manuell:** Zusätzlich in jedem Modus die Checkbox **„Vollzugsprüfung bei manueller Bedienung (dieser Modus)“** aktivieren. Es gilt dieselbe **globale** Vollzugsprüfung plus eingetragene **Notify-Empfänger**.
+- **Manuell:** Zusätzlich in jedem Modus die Checkbox **„Vollzugsprüfung bei manueller Bedienung (dieser Modus)“** aktivieren. Dann lösen die Tasten **Öffnen** / **Schließen** und der **Fahr-Slider** auf der Klappenkarte dieselbe Prüfung aus wie der Zeitplan (nach **Prüfzeit** Auswertung und **Notify**). Es gelten dieselbe **globale** Option und die eingetragenen **Notify-Empfänger**. Die Prüfung läuft in der **Web-Oberfläche** (Ingress); die Seite sollte bis nach Ablauf der Prüfzeit geöffnet bleiben, damit der Timer ausgeführt wird.
 
-### 5.3 Prüfzeit, Notify, Watchdog
+### 5.3 Benachrichtigung bei Störung
 
-- **Prüfzeit (Sekunden):** Wartezeit bis zur ersten Zustandsprüfung nach einem geplanten Öffnen/Schließen (Zeitpläne oder Tag/Nacht); dieselbe Dauer wird nach dem **einmaligen Nach-Schließen** bei den Sicherheitsschließzeiten erneut gewartet (5–600 s, Standard oft 45).
+- Schalter **„Benachrichtigung bei Störung“** unter **Sicherheit** (standardmäßig an): Der **Add-on-Scheduler** prüft etwa **alle 45 Sekunden** die konfigurierten **Status-** und **Zustandssensoren**. Enthält mindestens einer der Texte **„Störung“** oder **„storung“**, wird **einmal pro neuem Störungsfall** an die gleichen **Notify-Ziele** wie bei den anderen Sicherheitsmeldungen gesendet. Läuft **unabhängig** davon, ob die Web-UI offen ist.
+
+### 5.4 Prüfzeit, Notify, Watchdog
+
+- **Prüfzeit (Sekunden):** Wartezeit bis zur ersten Zustandsprüfung nach einem geplanten Öffnen/Schließen (Zeitpläne oder Tag/Nacht); dieselbe Dauer wird nach dem **einmaligen Nach-Schließen** bei den Sicherheitsschließzeiten erneut gewartet (5–600 s, Standard oft 45). **Manuelle** Vollzugsprüfung nutzt dieselbe Prüfzeit.
 - **Benachrichtigungen:** konfigurierte `notify`-Ziele (z. B. Companion-App); **Testbutton** in der UI.
 - **Watchdog:** Supervisor kann **`/api/health`** prüfen.
 
@@ -108,12 +112,19 @@ In **Benachrichtigungen** wird der Klappenzustand als kurzer Text aus den konfig
 | Erwarteter Zustand erreicht | Klappe … wurde geöffnet. / Klappe … wurde geschlossen. |
 | Nicht erreicht (oder geplanter Button-Aufruf schon fehlgeschlagen) | Klappe … konnte nicht geöffnet/geschlossen werden. Zustand der Klappe: „…“ |
 
+### C) Störung (Add-on-Überwachung)
+
+| Situation | Meldung (Auszug) |
+|-----------|------------------|
+| Status oder Zustand meldet Störung (neuer Fall) | **STÖRUNG:** Klappe …. Status: …; Zustand: …; … |
+
 ---
 
 ## 7. Wenn … dann … (Kurz)
 
 - **Sicherheitsschließzeiten aus:** keine automatischen Checks zu diesen Zeiten.
 - **Vollzugsprüfung aus:** nach Zeitplan kein Erfolgs-/Fehler-Ping; manuelle Nachprüfung entfällt ebenfalls (auch wenn die Modus-Checkbox an ist).
+- **Benachrichtigung bei Störung aus:** keine automatischen Störungs-Pushes; andere Scheduler-Funktionen laufen weiter.
 - **Keine Notify-Empfänger:** es werden keine Benachrichtigungen gesendet, die Logik im Scheduler läuft aber weiter (soweit sinnvoll).
 
 ---
@@ -128,7 +139,8 @@ In **Benachrichtigungen** wird der Klappenzustand als kurzer Text aus den konfig
 
 ## 9. Technische Referenz (Kurz)
 
-- Scheduler: `app/scheduler.mjs`
+- Scheduler: `app/scheduler.mjs` (inkl. Störungsüberwachung)
+- Gemeinsame Vollzugslogik Endschalter: `app/www/safety-gates.mjs`
 - UI: `app/www/liquid-glass-app.js`
 - REST: `app/server.mjs`, `/data/hkweb-settings.json`
 

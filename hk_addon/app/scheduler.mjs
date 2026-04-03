@@ -10,17 +10,26 @@
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { getSunTimesForPlzDE } from './sun-times.mjs';
+import {
+  vollzugCloseEndstopsOk,
+  vollzugOpenEndstopsOk,
+  textIndicatesStoerung,
+} from './www/safety-gates.mjs';
 
 const TICK_MS = 10_000;
+const STOERUNG_TICK_MS = 45_000;
 const SETTINGS_PATH = '/data/hkweb-settings.json';
 
 const HA_API = 'http://supervisor/core/api';
 const SUPERVISOR_TOKEN = process.env.SUPERVISOR_TOKEN;
 
 let timer = null;
+let stoerungTimer = null;
 let lastMinuteKey = null;
 let running = false;
 let lastBerlinDateKey = null;
+/** pro Klappen-ID: war im letzten Störungs-Tick bereits Störung (Kante für Notify) */
+let lastStoerungWasStoerung = {};
 /** `${plz}|${yyyy-mm-dd}` → { sunrise: 'HH:mm', sunset: 'HH:mm' } (Europe/Berlin, Kalendertag) */
 const sunByPlzDay = new Map();
 
@@ -212,12 +221,11 @@ function isKlappeClosedFromStates(states, klappe) {
   const zustandState = getState(zustandEntity);
 
   const expectedClose = 'geschlossen';
-  const endstopObenOk = endstopObenEntity ? endstopObenState === 'Inaktiv' : true;
-  const endstopUntenOk = endstopUntenEntity ? endstopUntenState === 'Aktiv' : true;
+  const endstopsOk = vollzugCloseEndstopsOk(getState, endstopObenEntity, endstopUntenEntity);
   const statusOk = statusEntity ? String(statusState ?? '').toLowerCase().includes(expectedClose) : true;
   const zustandOk = zustandEntity ? String(zustandState ?? '').toLowerCase().includes(expectedClose) : true;
 
-  return endstopObenOk && endstopUntenOk && statusOk && zustandOk;
+  return endstopsOk && statusOk && zustandOk;
 }
 
 /** Vollzugsprüfung nach geplantem Öffnen/Schließen (eine Nachricht bei Erfolg oder Misserfolg). */
@@ -234,8 +242,6 @@ async function checkScheduleActionOutcome({ klappe, kid, direction, notifyTarget
     return st?.state ?? null;
   };
 
-  const endstopObenState = getState(endstopObenEntity);
-  const endstopUntenState = getState(endstopUntenEntity);
   const statusState = getState(statusEntity);
   const zustandState = getState(zustandEntity);
 
@@ -254,12 +260,11 @@ async function checkScheduleActionOutcome({ klappe, kid, direction, notifyTarget
   };
 
   if (direction === 'open') {
-    const endstopObenOk = endstopObenEntity ? endstopObenState === 'Aktiv' : true;
-    const endstopUntenOk = endstopUntenEntity ? endstopUntenState === 'Inaktiv' : true;
+    const endstopsOk = vollzugOpenEndstopsOk(getState, endstopObenEntity, endstopUntenEntity);
     const statusOk = statusEntity ? statusLower.includes(expectedOpen) : true;
     const zustandOk = zustandEntity ? zustandLower.includes(expectedOpen) : true;
 
-    const ok = endstopObenOk && endstopUntenOk && statusOk && zustandOk;
+    const ok = endstopsOk && statusOk && zustandOk;
     if (ok) {
       await notify(`Klappe ${name} wurde geöffnet.`);
       return { ok: true };
@@ -268,12 +273,11 @@ async function checkScheduleActionOutcome({ klappe, kid, direction, notifyTarget
     return { ok: false };
   }
 
-  const endstopObenOk = endstopObenEntity ? endstopObenState === 'Inaktiv' : true;
-  const endstopUntenOk = endstopUntenEntity ? endstopUntenState === 'Aktiv' : true;
+  const endstopsOk = vollzugCloseEndstopsOk(getState, endstopObenEntity, endstopUntenEntity);
   const statusOk = statusEntity ? statusLower.includes(expectedClose) : true;
   const zustandOk = zustandEntity ? zustandLower.includes(expectedClose) : true;
 
-  const ok = endstopObenOk && endstopUntenOk && statusOk && zustandOk;
+  const ok = endstopsOk && statusOk && zustandOk;
   if (ok) {
     await notify(`Klappe ${name} wurde geschlossen.`);
     return { ok: true };
@@ -356,6 +360,51 @@ async function checkKlappeClosedAtSafetyTimes({ klappe, kid, notifyTargets, dela
     });
   }
   return { ok: false, reason: 'still_open' };
+}
+
+async function stoerungWatchTick(log) {
+  try {
+    const keys = await loadAddonSettingsSnapshot();
+    if (!keys) return;
+    if (keys['hkweb_sicherheit_stoerung_notify_enabled'] === 'false') return;
+    const notifyTargets = parseNotifyTargetsFromKeys(keys);
+    if (!notifyTargets.length) return;
+    const klappenConfig = safeJsonParse(keys['hkweb_klappen_config'], []);
+    const list = Array.isArray(klappenConfig) ? klappenConfig : [];
+    if (!list.length) return;
+
+    let states;
+    try {
+      states = await fetchAllHaStates();
+    } catch (e) {
+      log?.(`[stoerung] HA states: ${String(e?.message || e)}`);
+      return;
+    }
+
+    for (const klappe of list) {
+      const kid = String(klappe.id || '').trim();
+      if (!kid) continue;
+      const stEnt = klappe.statusEntity;
+      const zuEnt = klappe.zustandEntity;
+      if (!stEnt && !zuEnt) continue;
+      const st = stEnt ? states[stEnt]?.state : '';
+      const zu = zuEnt ? states[zuEnt]?.state : '';
+      const stoerung = textIndicatesStoerung(st) || textIndicatesStoerung(zu);
+      const was = lastStoerungWasStoerung[kid] === true;
+      lastStoerungWasStoerung[kid] = stoerung;
+      if (stoerung && !was) {
+        const name = getKlappeName(klappe, kid);
+        const detail = formatKlappeZustandText(states, klappe);
+        await callNotifyAll(notifyTargets, {
+          title: 'HK Sicherheit',
+          message: `STÖRUNG: Klappe ${name}. ${detail}`,
+        });
+        log?.(`[stoerung] Benachrichtigung: ${kid}`);
+      }
+    }
+  } catch (e) {
+    log?.(`[stoerung] tick-Fehler: ${String(e?.message || e)}`);
+  }
 }
 
 async function tick(log) {
@@ -549,16 +598,25 @@ async function tick(log) {
 
 export function startScheduler(log = console.log) {
   if (timer) return;
-  log('[scheduler] gestartet (Zeitpläne, Tag/Nacht, Security-Checks)');
+  log('[scheduler] gestartet (Zeitpläne, Tag/Nacht, Security-Checks, Störungsüberwachung)');
   // Sofort ein Tick, damit beim Add-on-Start nicht bis zum nächsten Intervall gewartet wird.
   void tick(log);
   timer = setInterval(() => {
     void tick(log);
   }, TICK_MS);
+  void stoerungWatchTick(log);
+  stoerungTimer = setInterval(() => {
+    void stoerungWatchTick(log);
+  }, STOERUNG_TICK_MS);
 }
 
 export function stopScheduler() {
-  if (!timer) return;
-  clearInterval(timer);
-  timer = null;
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+  if (stoerungTimer) {
+    clearInterval(stoerungTimer);
+    stoerungTimer = null;
+  }
 }
