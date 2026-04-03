@@ -3,8 +3,9 @@
  * - liest UI-Konfig aus /data/hkweb-settings.json
  * - führt Zeitpläne (modus: 'schedule') zur passenden Minute aus
  * - Tag/Nacht (modus: 'daynight'): tagesaktuelle Sonnenzeiten (PLZ) + Offsets, Zeitzone Europe/Berlin
- * - Sicherheitsschließzeiten (global + Zeiten pro Klappe): Prüfung + optional Nach-Schließen + Notify
+ * - Sicherheitsschließzeit (global + höchstens eine Uhrzeit pro Klappe): Prüfung + optional Nach-Schließen + Notify
  * - Vollzugsprüfung nach geplantem Öffnen/Schließen: Erfolg/Misserfolg per Notify
+ * - Störungsüberwachung: Text „Störung“ und Status/Zustand unavailable (mit letztem Offen/Geschlossen)
  */
 
 import fs from 'fs/promises';
@@ -14,6 +15,12 @@ import {
   vollzugCloseEndstopsOk,
   vollzugOpenEndstopsOk,
   textIndicatesStoerung,
+  vollzugStatusOpenOk,
+  vollzugStatusCloseOk,
+  vollzugTextMeansOpen,
+  vollzugTextMeansClosed,
+  haEntityStateIsUnavailable,
+  haEntityStateIsUnreachableUi,
 } from './www/safety-gates.mjs';
 
 const TICK_MS = 10_000;
@@ -30,6 +37,10 @@ let running = false;
 let lastBerlinDateKey = null;
 /** pro Klappen-ID: war im letzten Störungs-Tick bereits Störung (Kante für Notify) */
 let lastStoerungWasStoerung = {};
+/** pro Klappen-ID: zuletzt ausgelesen Geöffnet/Geschlossen (für Notify bei unavailable) */
+const lastKnownKlappeOpenClosed = {};
+/** pro Klappen-ID: letzter Tick hatte unavailable auf Status/Zustand */
+let lastWasUnreachable = {};
 /** `${plz}|${yyyy-mm-dd}` → { sunrise: 'HH:mm', sunset: 'HH:mm' } (Europe/Berlin, Kalendertag) */
 const sunByPlzDay = new Map();
 
@@ -131,6 +142,24 @@ function normTimeStr(s) {
   return t.length >= 5 ? t.slice(0, 5) : '';
 }
 
+/** Abwärtskompatibel: mehrere Einträge → nur die späteste gültige Uhrzeit (wie UI). */
+function safetySchliessenZeitenToSingleNormalized(raw) {
+  const list = Array.isArray(raw) ? raw.map(normTimeStr).filter(Boolean) : [];
+  if (list.length <= 1) return list;
+  let best = '';
+  let bestM = -1;
+  for (const t of list) {
+    const [h, m] = t.split(':').map(Number);
+    if (!Number.isFinite(h) || !Number.isFinite(m)) continue;
+    const mins = h * 60 + m;
+    if (mins > bestM) {
+      bestM = mins;
+      best = t;
+    }
+  }
+  return best && bestM >= 0 ? [best] : [];
+}
+
 /** HH:mm auch mit einstelligen Stunden (z. B. API-Ausgabe) */
 function normHHmmFlexible(s) {
   const t = String(s ?? '').trim();
@@ -160,6 +189,12 @@ function timeStrToMinutes(t) {
   return h * 60 + m;
 }
 
+function formatStateForNotifySnippet(raw) {
+  if (raw == null || raw === '') return '—';
+  if (haEntityStateIsUnreachableUi(raw)) return 'Nicht erreichbar';
+  return String(raw);
+}
+
 /** Kurzbeschreibung des Klappenzustands für Notify-Texte */
 function formatKlappeZustandText(states, klappe) {
   const parts = [];
@@ -168,10 +203,10 @@ function formatKlappeZustandText(states, klappe) {
   const zu = klappe?.zustandEntity;
   const eo = klappe?.endstopObenEntity;
   const eu = klappe?.endstopUntenEntity;
-  if (st) parts.push(`Status: ${get(st) ?? '—'}`);
-  if (zu) parts.push(`Zustand: ${get(zu) ?? '—'}`);
-  if (eo) parts.push(`Endschalter oben: ${get(eo) ?? '—'}`);
-  if (eu) parts.push(`Endschalter unten: ${get(eu) ?? '—'}`);
+  if (st) parts.push(`Status: ${formatStateForNotifySnippet(get(st))}`);
+  if (zu) parts.push(`Zustand: ${formatStateForNotifySnippet(get(zu))}`);
+  if (eo) parts.push(`Endschalter oben: ${formatStateForNotifySnippet(get(eo))}`);
+  if (eu) parts.push(`Endschalter unten: ${formatStateForNotifySnippet(get(eu))}`);
   return parts.length ? parts.join('; ') : 'keine Sensoren konfiguriert';
 }
 
@@ -220,12 +255,10 @@ function isKlappeClosedFromStates(states, klappe) {
   const statusState = getState(statusEntity);
   const zustandState = getState(zustandEntity);
 
-  const expectedClose = 'geschlossen';
   const endstopsOk = vollzugCloseEndstopsOk(getState, endstopObenEntity, endstopUntenEntity);
-  const statusOk = statusEntity ? String(statusState ?? '').toLowerCase().includes(expectedClose) : true;
-  const zustandOk = zustandEntity ? String(zustandState ?? '').toLowerCase().includes(expectedClose) : true;
+  const textOk = vollzugStatusCloseOk(statusState, zustandState, statusEntity, zustandEntity);
 
-  return endstopsOk && statusOk && zustandOk;
+  return endstopsOk && textOk;
 }
 
 /** Vollzugsprüfung nach geplantem Öffnen/Schließen (eine Nachricht bei Erfolg oder Misserfolg). */
@@ -248,12 +281,6 @@ async function checkScheduleActionOutcome({ klappe, kid, direction, notifyTarget
   const name = getKlappeName(klappe, kid);
   const zustandTxt = formatKlappeZustandText(states, klappe);
 
-  const statusLower = String(statusState ?? '').toLowerCase();
-  const zustandLower = String(zustandState ?? '').toLowerCase();
-
-  const expectedOpen = 'offen';
-  const expectedClose = 'geschlossen';
-
   const notify = async (message) => {
     if (!vollzug || !notifyTargets?.length) return;
     await callNotifyAll(notifyTargets, { title: 'HK Sicherheit', message });
@@ -261,10 +288,9 @@ async function checkScheduleActionOutcome({ klappe, kid, direction, notifyTarget
 
   if (direction === 'open') {
     const endstopsOk = vollzugOpenEndstopsOk(getState, endstopObenEntity, endstopUntenEntity);
-    const statusOk = statusEntity ? statusLower.includes(expectedOpen) : true;
-    const zustandOk = zustandEntity ? zustandLower.includes(expectedOpen) : true;
+    const textOk = vollzugStatusOpenOk(statusState, zustandState, statusEntity, zustandEntity);
 
-    const ok = endstopsOk && statusOk && zustandOk;
+    const ok = endstopsOk && textOk;
     if (ok) {
       await notify(`Klappe ${name} wurde geöffnet.`);
       return { ok: true };
@@ -274,10 +300,9 @@ async function checkScheduleActionOutcome({ klappe, kid, direction, notifyTarget
   }
 
   const endstopsOk = vollzugCloseEndstopsOk(getState, endstopObenEntity, endstopUntenEntity);
-  const statusOk = statusEntity ? statusLower.includes(expectedClose) : true;
-  const zustandOk = zustandEntity ? zustandLower.includes(expectedClose) : true;
+  const textOk = vollzugStatusCloseOk(statusState, zustandState, statusEntity, zustandEntity);
 
-  const ok = endstopsOk && statusOk && zustandOk;
+  const ok = endstopsOk && textOk;
   if (ok) {
     await notify(`Klappe ${name} wurde geschlossen.`);
     return { ok: true };
@@ -362,6 +387,29 @@ async function checkKlappeClosedAtSafetyTimes({ klappe, kid, notifyTargets, dela
   return { ok: false, reason: 'still_open' };
 }
 
+function stateIsReadableForLastKnown(s) {
+  const t = String(s ?? '').trim();
+  if (!t) return false;
+  const l = t.toLowerCase();
+  return l !== 'unavailable' && l !== 'unknown';
+}
+
+function updateLastKnownOpenClosedFromKlappe(kid, klappe, states) {
+  const stEnt = klappe.statusEntity;
+  const zuEnt = klappe.zustandEntity;
+  const st = stEnt ? states[stEnt]?.state : null;
+  const zu = zuEnt ? states[zuEnt]?.state : null;
+  if (stEnt && stateIsReadableForLastKnown(st)) {
+    if (vollzugTextMeansOpen(st)) lastKnownKlappeOpenClosed[kid] = 'Geöffnet';
+    else if (vollzugTextMeansClosed(st)) lastKnownKlappeOpenClosed[kid] = 'Geschlossen';
+    return;
+  }
+  if (zuEnt && stateIsReadableForLastKnown(zu)) {
+    if (vollzugTextMeansOpen(zu)) lastKnownKlappeOpenClosed[kid] = 'Geöffnet';
+    else if (vollzugTextMeansClosed(zu)) lastKnownKlappeOpenClosed[kid] = 'Geschlossen';
+  }
+}
+
 async function stoerungWatchTick(log) {
   try {
     const keys = await loadAddonSettingsSnapshot();
@@ -387,8 +435,24 @@ async function stoerungWatchTick(log) {
       const stEnt = klappe.statusEntity;
       const zuEnt = klappe.zustandEntity;
       if (!stEnt && !zuEnt) continue;
+      updateLastKnownOpenClosedFromKlappe(kid, klappe, states);
+
       const st = stEnt ? states[stEnt]?.state : '';
       const zu = zuEnt ? states[zuEnt]?.state : '';
+      const unreachable =
+        (stEnt && haEntityStateIsUnavailable(st)) || (zuEnt && haEntityStateIsUnavailable(zu));
+      const wasUnr = lastWasUnreachable[kid] === true;
+      lastWasUnreachable[kid] = unreachable;
+      if (unreachable && !wasUnr) {
+        const name = getKlappeName(klappe, kid);
+        const zuletzt = lastKnownKlappeOpenClosed[kid] || 'unbekannt';
+        await callNotifyAll(notifyTargets, {
+          title: 'HK Sicherheit',
+          message: `STÖRUNG: Klappe ${name} nicht erreichbar. Zuletzt bekannter Zustand: ${zuletzt}.`,
+        });
+        log?.(`[stoerung] Nicht erreichbar: ${kid} (zuletzt ${zuletzt})`);
+      }
+
       const stoerung = textIndicatesStoerung(st) || textIndicatesStoerung(zu);
       const was = lastStoerungWasStoerung[kid] === true;
       lastStoerungWasStoerung[kid] = stoerung;
@@ -517,9 +581,8 @@ async function tick(log) {
         }
       }
 
-      // 2) Sicherheitsschließzeiten: global schaltbar; Zeiten pro Klappe (Reiter Sicherheit)
-      const safeTimesRaw = mode?.sicherheit?.schliessenZeiten;
-      const safeTimes = Array.isArray(safeTimesRaw) ? safeTimesRaw.map(normTimeStr) : [];
+      // 2) Sicherheitsschließzeit: global schaltbar; höchstens eine Uhrzeit pro Klappe (Reiter Sicherheit)
+      const safeTimes = safetySchliessenZeitenToSingleNormalized(mode?.sicherheit?.schliessenZeiten);
       if (safetyCloseGlobal && safeTimes.length && safeTimes.includes(timeStr)) {
         safetyCloseChecks.push({ kid, klappe });
       }

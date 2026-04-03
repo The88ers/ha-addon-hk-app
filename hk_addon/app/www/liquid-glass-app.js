@@ -5,7 +5,13 @@ import {
   fetchAddonLogs,
   fetchSunTimesForPlz,
 } from './addon-persist.mjs';
-import { vollzugOpenEndstopsOk, vollzugCloseEndstopsOk } from './safety-gates.mjs';
+import {
+  vollzugOpenEndstopsOk,
+  vollzugCloseEndstopsOk,
+  vollzugStatusOpenOk,
+  vollzugStatusCloseOk,
+  haEntityStateIsUnreachableUi,
+} from './safety-gates.mjs';
 
 // Vault-Tec Terminal Theme - verwendet system fonts (Courier New, Consolas)
 
@@ -36,7 +42,7 @@ if (typeof window !== 'undefined' && !window.__hkwebBfCacheBound) {
 
 // --- HK WEB App (Fallout Theme) ---
 class HKWebApp extends LitElement {
-  static VERSION = '2.1.20';
+  static VERSION = '2.1.25';
 
   /** Sidebar: im Add-on = Git/config (window.__HK_ADDON_VERSION__), sonst App-Bundle-Version. */
   static getDisplayVersion() {
@@ -110,15 +116,6 @@ class HKWebApp extends LitElement {
     this.safetyNotifyManualDraft = '';
     this.securityInfoPinnedKey = '';
     this.klappenCardDetailsOpen = {};
-    /** Scroll-Listener auf .content (falls der Bereich selbst scrollt) */
-    this._contentElForScroll = null;
-    this._collapseKlappenDetailsOnScroll = () => {
-      if (this.activeTab !== 'klappen') return;
-      const o = this.klappenCardDetailsOpen;
-      if (!o || !Object.values(o).some(Boolean)) return;
-      this.klappenCardDetailsOpen = {};
-      this.requestUpdate();
-    };
     this._onDocClickSecurityInfo = (e) => {
       if (!this.securityInfoPinnedKey) return;
       const path = e.composedPath();
@@ -309,7 +306,6 @@ class HKWebApp extends LitElement {
     this.handleResize();
     this.handleResize = this.handleResize.bind(this);
     window.addEventListener('resize', this.handleResize);
-    window.addEventListener('scroll', this._collapseKlappenDetailsOnScroll, { passive: true });
     document.addEventListener('click', this._onDocClickSecurityInfo, true);
   }
 
@@ -390,11 +386,6 @@ class HKWebApp extends LitElement {
       window.removeEventListener('focus', this._onVisibilityOrFocus);
     }
     window.removeEventListener('resize', this.handleResize);
-    window.removeEventListener('scroll', this._collapseKlappenDetailsOnScroll);
-    if (this._contentElForScroll) {
-      this._contentElForScroll.removeEventListener('scroll', this._collapseKlappenDetailsOnScroll);
-      this._contentElForScroll = null;
-    }
     document.removeEventListener('click', this._onDocClickSecurityInfo, true);
   }
   
@@ -504,25 +495,13 @@ class HKWebApp extends LitElement {
     if (changedProps.has('hass')) {
       // Sofortiger Check beim ersten Setzen
       this.checkEntityStates();
+      if (this.hass?.states) {
+        this._autoPickWifiSignalEntitiesIfNeeded();
+      }
       // Validiere Entities
       this.entityValidation = this.validateAllEntities();
       this.requestUpdate();
     }
-    if (this.settingsReady) {
-      this._attachKlappenScrollCollapseTarget();
-    }
-  }
-
-  /** Zusätzlich zu window: Haupt-Inhaltsbereich, falls dieser scrollbar ist (z. B. eingebettet). */
-  _attachKlappenScrollCollapseTarget() {
-    const el = this.shadowRoot?.querySelector('.content');
-    if (!el || el === this._contentElForScroll) return;
-    if (this._contentElForScroll) {
-      this._contentElForScroll.removeEventListener('scroll', this._collapseKlappenDetailsOnScroll);
-      this._contentElForScroll = null;
-    }
-    this._contentElForScroll = el;
-    el.addEventListener('scroll', this._collapseKlappenDetailsOnScroll, { passive: true });
   }
 
   checkEntityStates() {
@@ -839,6 +818,10 @@ class HKWebApp extends LitElement {
     const canonical = this.buildKlappeEntityDefaults(klappeId);
     if (canonical[fieldKey]) push(canonical[fieldKey]);
 
+    if (fieldKey === 'wifiSignalEntity') {
+      this._appendWifiSignalDiscoveryCandidates(push, klappeId);
+    }
+
     if (!configuredId || typeof configuredId !== 'string') return cands;
 
     const trimmed = configuredId.trim();
@@ -879,13 +862,6 @@ class HKWebApp extends LitElement {
       push(`binary_sensor.${kid}_${kid}_endschalter_${pos}`);
     }
 
-    if (fieldKey === 'wifiSignalEntity') {
-      push(`sensor.${kid}_${kid}_wifi_signal`);
-      push(`sensor.${kid}_${kid}_wlan_signal`);
-      this._pushEsphomePrefixedSensorForKid(push, kid, 'wifi_signal');
-      this._pushEsphomePrefixedSensorForKid(push, kid, 'wlan_signal');
-    }
-
     if (rest === `${kid}_zustand_${kid}`) {
       push(`${domain}.${kid}_${kid}_zustand`);
     }
@@ -912,18 +888,56 @@ class HKWebApp extends LitElement {
     return cands;
   }
 
-  /** sensor.*_<kid>_<suffix> (z. B. ESPHome-Geräteslug + Node). */
-  _pushEsphomePrefixedSensorForKid(push, kid, suffix) {
+  /**
+   * Alle sensor.*-WLAN-Stärke-Entities, die zur Klappen-ID passen (ESPHome variiert: Slug, einfaches hkN, wlan/wifi/rssi).
+   */
+  _discoverWifiSignalSensorIdsForKid(kid) {
     const states = this.hass?.states;
-    if (!states || !suffix) return;
-    const escK = this._escapeRegExp(kid);
-    const escS = this._escapeRegExp(String(suffix));
-    const re = new RegExp(`^sensor\\.[a-z0-9_]+_${escK}_${escS}$`);
-    const ids = [];
+    if (!states || !kid) return [];
+    const esc = this._escapeRegExp(kid);
+    const patterns = [
+      new RegExp(`^sensor\\.${esc}_wifi_signal$`),
+      new RegExp(`^sensor\\.${esc}_wlan_signal$`),
+      new RegExp(`^sensor\\.${esc}_wifi_rssi$`),
+      new RegExp(`^sensor\\.[a-z0-9_]+_${esc}_wifi_signal$`),
+      new RegExp(`^sensor\\.[a-z0-9_]+_${esc}_wlan_signal$`),
+      new RegExp(`^sensor\\.[a-z0-9_]+_${esc}_wifi_rssi$`),
+    ];
+    const out = new Set();
     for (const id of Object.keys(states)) {
-      if (re.test(id)) ids.push(id);
+      if (!id.startsWith('sensor.')) continue;
+      if (patterns.some((re) => re.test(id))) out.add(id);
     }
-    ids.sort().forEach((id) => push(id));
+    return [...out].sort();
+  }
+
+  _appendWifiSignalDiscoveryCandidates(push, kid) {
+    for (const id of this._discoverWifiSignalSensorIdsForKid(kid)) {
+      push(id);
+    }
+  }
+
+  /**
+   * Wenn die eingetragene WLAN-Entity fehlt (oder leer) und in HA genau eine passende sensor.*-WLAN-Entity
+   * zur Klappen-ID existiert: automatisch eintragen (Auto-Reparatur / Entity-Prüfung greifen dasselbe Kandidaten-Set).
+   */
+  _autoPickWifiSignalEntitiesIfNeeded() {
+    if (!this.hass?.states || !this.klappenConfig?.length) return false;
+    let changed = false;
+    for (const k of this.klappenConfig) {
+      const cur = (k.wifiSignalEntity || '').trim();
+      if (cur && this.checkEntityExists(cur)) continue;
+      const found = this._discoverWifiSignalSensorIdsForKid(k.id);
+      if (found.length !== 1) continue;
+      const pick = found[0];
+      k.wifiSignalEntity = pick;
+      changed = true;
+      this.addLogEntry(`${k.name}: WLAN-Signal automatisch zugewiesen → ${pick}`);
+    }
+    if (changed) {
+      this.saveKlappenConfig(this.klappenConfig);
+    }
+    return changed;
   }
 
   /** Alle button.* in hass.states, die auf …_<kid>_<suffix> passen (mehrere ESPHome-Namensmuster). */
@@ -1255,6 +1269,13 @@ class HKWebApp extends LitElement {
             sicherheit: { ...def.sicherheit, ...(cur.sicherheit || {}) },
             manual: { ...def.manual, ...(cur.manual || {}) },
           };
+          const sz = this._normalizeSicherheitSchliessenZeitenToSingle(
+            this.klappenModi[k.id].sicherheit?.schliessenZeiten,
+          );
+          this.klappenModi[k.id].sicherheit = {
+            ...this.klappenModi[k.id].sicherheit,
+            schliessenZeiten: sz,
+          };
         });
         this.saveModi();
       } catch (e) {
@@ -1292,7 +1313,7 @@ class HKWebApp extends LitElement {
         // Sicherheits-Checks nach jedem Open/Close-Befehl im jeweiligen Modus
         sicherheitsschliessen: false,
       },
-      // Sicherheits-Zeiten pro Klappe: zu diesen Uhrzeiten prüfen wir "Klappe zu".
+      // Sicherheits-Zeiten pro Klappe: höchstens eine Uhrzeit, zu der „Klappe zu“ geprüft wird.
       sicherheit: {
         schliessenZeiten: [],
       },
@@ -1332,7 +1353,7 @@ class HKWebApp extends LitElement {
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
   }
 
-  /** Späteste Sicherheitsschließzeit des Tages in Minuten seit Mitternacht, oder null */
+  /** Sicherheitsschließzeit in Minuten seit Mitternacht (max. eine pro Klappe), oder null */
   _getLatestSafetySchliessenMinutes(klappeId) {
     const m = this.getKlappenModus(klappeId);
     const raw = m?.sicherheit?.schliessenZeiten || [];
@@ -1342,14 +1363,42 @@ class HKWebApp extends LitElement {
     return Math.max(...mins);
   }
 
+  /**
+   * Pro Klappe nur eine Sicherheitsschließzeit. Alte Konfigurationen mit mehreren Einträgen:
+   * es bleibt die späteste gültige Uhrzeit des Tages.
+   */
+  _normalizeSicherheitSchliessenZeitenToSingle(raw) {
+    const list = Array.isArray(raw) ? raw : [];
+    const pairs = list
+      .map((z) => {
+        const norm = this._normTimeStrUi(z);
+        const m = this._timeStrToMinutesUi(z);
+        return { z: norm, m };
+      })
+      .filter((x) => x.z && Number.isFinite(x.m));
+    if (!pairs.length) return [];
+    pairs.sort((a, b) => b.m - a.m);
+    return [pairs[0].z];
+  }
+
+  _formatStateForZustandSummary(raw) {
+    if (raw == null || raw === '') return '—';
+    if (haEntityStateIsUnreachableUi(raw)) return 'Nicht erreichbar';
+    return String(raw);
+  }
+
   _formatKlappeZustandSummary(klappe) {
     const states = this.hass?.states || {};
     const get = (id) => (id ? states[id]?.state ?? null : null);
     const parts = [];
-    if (klappe?.statusEntity) parts.push(`Status: ${get(klappe.statusEntity) ?? '—'}`);
-    if (klappe?.zustandEntity) parts.push(`Zustand: ${get(klappe.zustandEntity) ?? '—'}`);
-    if (klappe?.endstopObenEntity) parts.push(`Endschalter oben: ${get(klappe.endstopObenEntity) ?? '—'}`);
-    if (klappe?.endstopUntenEntity) parts.push(`Endschalter unten: ${get(klappe.endstopUntenEntity) ?? '—'}`);
+    if (klappe?.statusEntity) parts.push(`Status: ${this._formatStateForZustandSummary(get(klappe.statusEntity))}`);
+    if (klappe?.zustandEntity) parts.push(`Zustand: ${this._formatStateForZustandSummary(get(klappe.zustandEntity))}`);
+    if (klappe?.endstopObenEntity) {
+      parts.push(`Endschalter oben: ${this._formatStateForZustandSummary(get(klappe.endstopObenEntity))}`);
+    }
+    if (klappe?.endstopUntenEntity) {
+      parts.push(`Endschalter unten: ${this._formatStateForZustandSummary(get(klappe.endstopUntenEntity))}`);
+    }
     return parts.length ? parts.join('; ') : 'keine Sensoren konfiguriert';
   }
 
@@ -1382,15 +1431,16 @@ class HKWebApp extends LitElement {
     const maxS = this._getLatestSafetySchliessenMinutes(klappeId);
     const hhmm = maxS != null ? this._minutesToHHMM(maxS) : '?';
     this.addLogEntry(
-      `Abgelehnt: Geplante Schließzeit darf nicht nach der spätesten Sicherheitsschließzeit (${hhmm}) liegen.`,
+      `Abgelehnt: Geplante Schließzeit darf nicht nach der Sicherheitsschließzeit (${hhmm}) liegen.`,
     );
     return false;
   }
 
   _rejectSafetyTimesIfBreaksSchedule(klappeId, newSafetyZeiten) {
-    const mins = (Array.isArray(newSafetyZeiten) ? newSafetyZeiten : [])
-      .map((z) => this._timeStrToMinutesUi(z))
-      .filter((x) => Number.isFinite(x));
+    const single = this._normalizeSicherheitSchliessenZeitenToSingle(
+      Array.isArray(newSafetyZeiten) ? newSafetyZeiten : [],
+    );
+    const mins = single.map((z) => this._timeStrToMinutesUi(z)).filter((x) => Number.isFinite(x));
     if (!mins.length) return true;
     const newMax = Math.max(...mins);
     const m = this.getKlappenModus(klappeId);
@@ -1399,7 +1449,7 @@ class HKWebApp extends LitElement {
       const c = this._timeStrToMinutesUi(z);
       if (Number.isFinite(c) && c > newMax) {
         this.addLogEntry(
-          `Abgelehnt: Die späteste Sicherheitsschließzeit (${this._minutesToHHMM(newMax)}) liegt vor der geplanten Schließzeit ${this._normTimeStrUi(z)} im Modus „Zeitpläne“. Bitte zuerst die Schließzeit unter „Modi“ anpassen oder entfernen.`,
+          `Abgelehnt: Die Sicherheitsschließzeit (${this._minutesToHHMM(newMax)}) liegt vor der geplanten Schließzeit ${this._normTimeStrUi(z)} im Modus „Zeitpläne“. Bitte zuerst die Schließzeit unter „Modi“ anpassen oder entfernen.`,
         );
         return false;
       }
@@ -1697,27 +1747,18 @@ class HKWebApp extends LitElement {
     const statusState = getState(statusEntity);
     const zustandState = getState(zustandEntity);
 
-    const statusLower = String(statusState ?? '').toLowerCase();
-    const zustandLower = String(zustandState ?? '').toLowerCase();
-
-    const expectedOpen = 'offen';
-    const expectedClose = 'geschlossen';
-
-    let statusOk = true;
-    let zustandOk = true;
     let endstopsOk = true;
+    let textOk = true;
 
     if (direction === 'open') {
       endstopsOk = vollzugOpenEndstopsOk(getState, endstopObenEntity, endstopUntenEntity);
-      statusOk = statusEntity ? statusLower.includes(expectedOpen) : true;
-      zustandOk = zustandEntity ? zustandLower.includes(expectedOpen) : true;
+      textOk = vollzugStatusOpenOk(statusState, zustandState, statusEntity, zustandEntity);
     } else {
       endstopsOk = vollzugCloseEndstopsOk(getState, endstopObenEntity, endstopUntenEntity);
-      statusOk = statusEntity ? statusLower.includes(expectedClose) : true;
-      zustandOk = zustandEntity ? zustandLower.includes(expectedClose) : true;
+      textOk = vollzugStatusCloseOk(statusState, zustandState, statusEntity, zustandEntity);
     }
 
-    const ok = endstopsOk && statusOk && zustandOk;
+    const ok = endstopsOk && textOk;
     const zustandTxt = this._formatKlappeZustandSummary(klappe);
     const list = Array.isArray(notifyTargets) ? notifyTargets : [];
 
@@ -1891,6 +1932,25 @@ class HKWebApp extends LitElement {
     return this.hass.states[entityId]?.state || null;
   }
 
+  /** Letzte-Aktion-Text aus ESPHome (ASCII) für die UI in normales Deutsch. */
+  formatLetzteAktionAnzeige(raw) {
+    if (raw == null || raw === '') return raw;
+    return String(raw)
+      .replace(/\bOeffnen\b/g, 'Öffnen')
+      .replace(/\boeffnen\b/g, 'öffnen')
+      .replace(/\bSchliessen\b/g, 'Schließen')
+      .replace(/\bschliessen\b/g, 'schließen');
+  }
+
+  /** Status-Badge auf der Klappenkarte: Zustand „offen“ wie gewohnt als „Öffnen“; weitere ASCII-Fixes wie bei Letzte Aktion. */
+  formatKlappenStatusAnzeige(raw) {
+    if (raw == null || raw === '') return null;
+    const t = String(raw).trim();
+    if (haEntityStateIsUnreachableUi(t)) return 'Nicht erreichbar';
+    if (/^offen$/i.test(t)) return 'Öffnen';
+    return this.formatLetzteAktionAnzeige(t);
+  }
+
   /** Zeitpunkt der letzten Zustandsänderung der Entity (wie in HA), für Anzeige bei „Letzte Aktion“. */
   formatHaTimestamp(iso) {
     if (!iso) return null;
@@ -1927,7 +1987,8 @@ class HKWebApp extends LitElement {
     if (!entityId || !this.hass?.states?.[entityId]) return '—';
     const st = this.hass.states[entityId];
     const raw = st.state;
-    if (raw === undefined || raw === null || raw === 'unavailable' || raw === 'unknown' || raw === '') return '—';
+    if (raw === undefined || raw === null || raw === '') return '—';
+    if (haEntityStateIsUnreachableUi(raw)) return 'Nicht erreichbar';
     const domain = entityId.split('.')[0];
     if (domain === 'binary_sensor' || domain === 'switch') {
       if (raw === 'on') return 'Aktiv';
@@ -2068,8 +2129,9 @@ class HKWebApp extends LitElement {
 
   getStatusClass(status) {
     if (!status) return '';
+    if (haEntityStateIsUnreachableUi(status)) return 'nicht-erreichbar';
     const statusLower = status.toLowerCase();
-    if (statusLower.includes('offen') || statusLower === 'offen') return 'offen';
+    if (statusLower.includes('offen') || statusLower.includes('öffnen')) return 'offen';
     if (statusLower.includes('geschlossen') || statusLower === 'geschlossen') return 'geschlossen';
     if (statusLower.includes('bewegung') || statusLower.includes('fahrt')) return 'in-bewegung';
     if (statusLower.includes('störung') || statusLower.includes('storung')) return 'stoerung';
@@ -2092,7 +2154,7 @@ class HKWebApp extends LitElement {
     if (statusClass === 'geschlossen') return 'closed';
     if (statusClass === 'offen') return 'open';
     if (statusClass === 'in-bewegung') return 'moving';
-    if (statusClass === 'stoerung') return 'alarm';
+    if (statusClass === 'stoerung' || statusClass === 'nicht-erreichbar') return 'alarm';
     return 'unknown';
   }
 
@@ -2326,11 +2388,14 @@ class HKWebApp extends LitElement {
     // Status aus Text-Sensor lesen (für HK1)
     const status = k.statusEntity ? this.getStatusFromTextSensor(k.statusEntity) : null;
     const zustand = k.zustandEntity ? this.getStatusFromTextSensor(k.zustandEntity) : null;
-    const lastAction = k.lastActionEntity ? this.getStatusFromTextSensor(k.lastActionEntity) : null;
+    const lastActionRaw = k.lastActionEntity ? this.getStatusFromTextSensor(k.lastActionEntity) : null;
+    const lastAction =
+      lastActionRaw != null ? this.formatLetzteAktionAnzeige(lastActionRaw) : null;
     const lastActionWhen = k.lastActionEntity ? this.getEntityLastChangedFormatted(k.lastActionEntity) : null;
 
-    const statusClass = this.getStatusClass(status || zustand);
-    const displayStatus = status || zustand || 'Unbekannt';
+    const rawStatus = status || zustand;
+    const statusClass = this.getStatusClass(rawStatus);
+    const displayStatus = this.formatKlappenStatusAnzeige(rawStatus) || 'Unbekannt';
     const detailsOpen = !!(this.klappenCardDetailsOpen && this.klappenCardDetailsOpen[k.id]);
     const showHardware =
       !!(k.endstopObenEntity || k.endstopUntenEntity || k.motorEnableEntity);
@@ -2778,7 +2843,7 @@ class HKWebApp extends LitElement {
                   if (this._dayNightSchliessenViolatesSafety(klappeId)) {
                     this.updateKlappenModusEinstellung(klappeId, 'daynight', 'offsetSchliessen', prev);
                     this.addLogEntry(
-                      'Abgelehnt: Die errechnete Schließzeit (Tag/Nacht) liegt nach der spätesten Sicherheitsschließzeit. Offset angepasst oder Sicherheitszeiten unter „Sicherheit“ prüfen.',
+                      'Abgelehnt: Die errechnete Schließzeit (Tag/Nacht) liegt nach der Sicherheitsschließzeit. Offset angepasst oder Sicherheitszeit unter „Sicherheit“ prüfen.',
                     );
                   }
                   this.requestUpdate();
@@ -3218,7 +3283,8 @@ class HKWebApp extends LitElement {
                       </p>
                       <p>
                         Diese Logik hat <strong>Vorrang vor den Modi</strong>: Geplante Schließzeiten unter „Modi → Zeitpläne“ und die errechnete Schließzeit bei
-                        „Tag/Nacht“ dürfen <strong>nicht nach der spätesten</strong> Sicherheitsschließzeit liegen — die Eingabe wird sonst abgelehnt (Hinweis im App-Log).
+                        „Tag/Nacht“ dürfen <strong>nicht nach der</strong> unter „Sicherheit“ pro Klappe eingetragenen <strong>Sicherheitsschließzeit</strong> liegen — die
+                        Eingabe wird sonst abgelehnt (Hinweis im App-Log).
                       </p>
                     `,
                   )}
@@ -3294,7 +3360,13 @@ class HKWebApp extends LitElement {
                         unten eingetragenen Notify-Empfänger.
                       </p>
                       <p>
-                        Nach Aufhebung der Störung und erneutem Auftreten wird wieder benachrichtigt. Ohne eingetragene Empfänger erfolgt kein Versand.
+                        Wechselt ein Sensor auf Home-Assistant-Status <strong>unavailable</strong> (Verbindungsabbruch zur Klappe), gilt das ebenfalls als Störung: Es
+                        wird <strong>einmal</strong> benachrichtigt mit dem <strong>zuletzt bekannten</strong> Zustand <strong>Geöffnet</strong> oder
+                        <strong>Geschlossen</strong> (sofern zuvor auslesbar; sonst „unbekannt“).
+                      </p>
+                      <p>
+                        Nach Aufhebung der Störung bzw. nach Wiederherstellung der Verbindung und erneutem Auftreten wird wieder benachrichtigt. Ohne eingetragene
+                        Empfänger erfolgt kein Versand.
                       </p>
                     `,
                   )}
@@ -3325,7 +3397,8 @@ class HKWebApp extends LitElement {
                       Fehler mit Klappenzustand).
                     </p>
                     <p>
-                      <strong>Dritter Block:</strong> <strong>STÖRUNG</strong>, wenn Status- oder Zustandstext „Störung“ meldet (Add-on-Überwachung, wenn aktiviert).
+                      <strong>Dritter Block:</strong> <strong>STÖRUNG</strong>, wenn Status- oder Zustandstext „Störung“ meldet oder ein Sensor
+                      <strong>unavailable</strong> ist (Add-on-Überwachung, wenn aktiviert).
                     </p>
                   `,
                 )}
@@ -3333,7 +3406,7 @@ class HKWebApp extends LitElement {
             </h3>
             <div class="sicherheit-msg-section-title">Sicherheitsschließzeiten</div>
             <p class="sicherheit-msg-section-lead">
-              Add-on-Scheduler, wenn „Sicherheitsschließzeiten global aktiv“ eingeschaltet ist und pro Klappe Zeiten eingetragen sind.
+              Add-on-Scheduler, wenn „Sicherheitsschließzeiten global aktiv“ eingeschaltet ist und pro Klappe eine Sicherheitsschließzeit eingetragen ist.
             </p>
             <ul class="sicherheit-msg-list">
               <li class="sicherheit-msg-item">
@@ -3397,6 +3470,14 @@ class HKWebApp extends LitElement {
                 <div class="sicherheit-msg-sample">STÖRUNG: Klappe …. Status: …; Zustand: …; …</div>
                 <p class="sicherheit-msg-explainer">
                   Mindestens einer der Texte enthält „Störung“ (oder „storung“). Nach Behebung und erneutem Auftreten folgt wieder eine Meldung.
+                </p>
+              </li>
+              <li class="sicherheit-msg-item">
+                <div class="sicherheit-msg-sample">
+                  STÖRUNG: Klappe … nicht erreichbar. Zuletzt bekannter Zustand: Geöffnet / Geschlossen / unbekannt.
+                </div>
+                <p class="sicherheit-msg-explainer">
+                  Status- oder Zustandssensor meldet <code class="inline-code">unavailable</code>. Der zuletzt ausgelesene Klappenzustand wird mitgeschickt.
                 </p>
               </li>
             </ul>
@@ -3581,19 +3662,20 @@ class HKWebApp extends LitElement {
 
         ${klappen.map((k) => {
           const m = this.getKlappenModus(k.id);
-          const safeTimes = m?.sicherheit?.schliessenZeiten || [];
+          const safeTimes = this._normalizeSicherheitSchliessenZeitenToSingle(m?.sicherheit?.schliessenZeiten || []);
+          const singleTime = safeTimes[0] || '';
           return html`
             <div class="glass-card hk-tab-card hk-tab-card--sicherheit-popovers">
               <h2 class="settings-title" style="margin:0 0 8px 0">${k.name}</h2>
               <div class="settings-section">
                 <h3 class="settings-section-title hk-sicherheit-heading-with-info" style="margin-top:0">
                   <span class="hk-sicherheit-heading-inline"
-                    ><span class="hk-sicherheit-heading-title">Sicherheitsschließzeiten (${k.name})</span>${this._renderSecurityInfoIcon(
+                    ><span class="hk-sicherheit-heading-title">Sicherheitsschließzeit (${k.name})</span>${this._renderSecurityInfoIcon(
                       `sec-safety-times-${k.id}`,
                       html`
                         <p>
-                          <strong>Uhrzeiten</strong>, zu denen die Klappe <strong>geschlossen</strong> sein soll — unabhängig vom gewählten Modus (Zeitpläne, Tag/Nacht,
-                          Manuell).
+                          <strong>Uhrzeit</strong>, zu der die Klappe <strong>geschlossen</strong> sein soll — unabhängig vom gewählten Modus (Zeitpläne, Tag/Nacht,
+                          Manuell). Pro Klappe ist nur <strong>eine</strong> Sicherheitsschließzeit möglich.
                         </p>
                         <p>
                           Wirksam nur, wenn oben <strong>„Sicherheitsschließzeiten global aktiv“</strong> eingeschaltet ist. Der Add-on-Scheduler prüft nach der
@@ -3602,72 +3684,63 @@ class HKWebApp extends LitElement {
                         </p>
                         <p>
                           Geplante Schließzeiten unter <strong>Modi → Zeitpläne</strong> und die errechnete Schließzeit bei <strong>Tag/Nacht</strong> dürfen nicht
-                          <strong>nach der spätesten</strong> hier eingetragenen Zeit liegen.
+                          <strong>nach dieser</strong> hier eingetragenen Zeit liegen.
                         </p>
                       `,
                     )}
                   </span>
                 </h3>
                 <div class="time-schedule-list">
-                  ${(safeTimes || []).map((zeit, index) => html`
-                    <div class="time-schedule-item">
-                      <input
-                        type="time"
-                        .value="${zeit}"
-                        @change=${(e) => {
-                          const zeiten = [...((m?.sicherheit?.schliessenZeiten) || safeTimes || [])];
-                          zeiten[index] = e.target.value;
-                          if (!this._rejectSafetyTimesIfBreaksSchedule(k.id, zeiten)) {
-                            this.requestUpdate();
-                            return;
-                          }
-                          if (!this.klappenModi) this.loadModi();
-                          if (!this.klappenModi[k.id]) this.klappenModi[k.id] = this.createDefaultModusConfig();
-                          if (!this.klappenModi[k.id].sicherheit) this.klappenModi[k.id].sicherheit = { schliessenZeiten: [] };
-                          this.klappenModi[k.id].sicherheit.schliessenZeiten = zeiten;
-                          this.saveModi();
+                  <div class="time-schedule-item">
+                    <input
+                      type="time"
+                      .value="${singleTime}"
+                      @change=${(e) => {
+                        const v = e.target.value;
+                        const zeiten = v && String(v).trim() ? [v] : [];
+                        if (!this._rejectSafetyTimesIfBreaksSchedule(k.id, zeiten)) {
                           this.requestUpdate();
-                        }}
-                      />
-                      <button
-                        class="remove-time-btn"
-                        @click=${() => {
-                          const zeiten = [...(this.getKlappenModus(k.id)?.sicherheit?.schliessenZeiten || [])];
-                          zeiten.splice(index, 1);
-                          if (!this._rejectSafetyTimesIfBreaksSchedule(k.id, zeiten)) {
-                            this.requestUpdate();
-                            return;
-                          }
-                          if (!this.klappenModi) this.loadModi();
-                          if (!this.klappenModi[k.id]) this.klappenModi[k.id] = this.createDefaultModusConfig();
-                          if (!this.klappenModi[k.id].sicherheit) this.klappenModi[k.id].sicherheit = { schliessenZeiten: [] };
-                          this.klappenModi[k.id].sicherheit.schliessenZeiten = zeiten;
-                          this.saveModi();
-                          this.requestUpdate();
-                        }}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  `)}
-                  <button
-                    class="add-time-btn"
-                    @click=${() => {
-                      const zeiten = [...(this.getKlappenModus(k.id)?.sicherheit?.schliessenZeiten || []), '20:00'];
-                      if (!this._rejectSafetyTimesIfBreaksSchedule(k.id, zeiten)) return;
-                      if (!this.klappenModi) this.loadModi();
-                      if (!this.klappenModi[k.id]) this.klappenModi[k.id] = this.createDefaultModusConfig();
-                      if (!this.klappenModi[k.id].sicherheit) this.klappenModi[k.id].sicherheit = { schliessenZeiten: [] };
-                      this.klappenModi[k.id].sicherheit.schliessenZeiten = zeiten;
-                      this.saveModi();
-                      this.requestUpdate();
-                    }}
-                  >
-                    + Sicherheitsschließzeit hinzufügen
-                  </button>
+                          return;
+                        }
+                        if (!this.klappenModi) this.loadModi();
+                        if (!this.klappenModi[k.id]) this.klappenModi[k.id] = this.createDefaultModusConfig();
+                        if (!this.klappenModi[k.id].sicherheit) this.klappenModi[k.id].sicherheit = { schliessenZeiten: [] };
+                        this.klappenModi[k.id].sicherheit.schliessenZeiten =
+                          this._normalizeSicherheitSchliessenZeitenToSingle(zeiten);
+                        this.saveModi();
+                        this.requestUpdate();
+                      }}
+                    />
+                    ${singleTime
+                      ? html`
+                          <button
+                            class="remove-time-btn"
+                            title="Sicherheitsschließzeit entfernen"
+                            @click=${() => {
+                              const zeiten = [];
+                              if (!this._rejectSafetyTimesIfBreaksSchedule(k.id, zeiten)) {
+                                this.requestUpdate();
+                                return;
+                              }
+                              if (!this.klappenModi) this.loadModi();
+                              if (!this.klappenModi[k.id]) this.klappenModi[k.id] = this.createDefaultModusConfig();
+                              if (!this.klappenModi[k.id].sicherheit) {
+                                this.klappenModi[k.id].sicherheit = { schliessenZeiten: [] };
+                              }
+                              this.klappenModi[k.id].sicherheit.schliessenZeiten = [];
+                              this.saveModi();
+                              this.requestUpdate();
+                            }}
+                          >
+                            ×
+                          </button>
+                        `
+                      : ''}
+                  </div>
                 </div>
                 <div class="info-text">
-                  Läuft nur bei <strong>„Sicherheitsschließzeiten global aktiv“</strong>. Meldungen siehe oben. Geplante Schließzeiten unter „Modi“ müssen nicht später sein als die <strong>späteste</strong> hier eingetragene Zeit.
+                  Läuft nur bei <strong>„Sicherheitsschließzeiten global aktiv“</strong>. Meldungen siehe oben. Geplante Schließzeiten unter „Modi“ dürfen nicht später
+                  sein als die hier eingetragene Zeit.
                 </div>
               </div>
             </div>
@@ -4188,7 +4261,8 @@ class HKWebApp extends LitElement {
         animation: pulse-orange 3s ease-in-out infinite;
         border: 2px solid #ffd699;
       }
-      .status-indicator.stoerung {
+      .status-indicator.stoerung,
+      .status-indicator.nicht-erreichbar {
         color: #c41e1e;
         background: rgba(255, 59, 48, 0.18);
         border: 2px solid #ff3b30;
@@ -6351,7 +6425,9 @@ class HKWebApp extends LitElement {
         ${results.summary.invalid > 0 ? html`
           <div class="entity-check-actions">
             <p class="entity-repair-hint">
-              Auto-Reparatur setzt fehlerhafte IDs auf die Baseline (<code>HOME ASSISTANT ENTITÄTEN.md</code>) bzw. die erste passende Entity in Home Assistant (z.&nbsp;B. falsch <code>sensor.hk1_hk1_status</code> → richtig <code>sensor.hk1_status_hk1</code>).
+              Auto-Reparatur setzt fehlerhafte IDs auf die Baseline (<code>HOME ASSISTANT ENTITÄTEN.md</code>) bzw. die erste passende Entity in Home Assistant (z.&nbsp;B. falsch <code>sensor.hk1_hk1_status</code> → richtig <code>sensor.hk1_status_hk1</code>). Beim
+              <strong>WLAN-Signal</strong> werden u.&nbsp;a. <code>sensor.&lt;gerät&gt;_hkN_wifi_signal</code>, <code>sensor.hkN_wifi_signal</code> und
+              <code>…_wlan_signal</code> berücksichtigt; gibt es genau einen Treffer, wird die ID beim Verbinden mit HA oft automatisch gesetzt.
             </p>
             <button
               type="button"

@@ -42,3 +42,61 @@ export function textIndicatesStoerung(text) {
   const s = String(text).toLowerCase();
   return s.includes('störung') || s.includes('storung');
 }
+
+/** Nur `unavailable` — für Störungs-Push bei Verbindungsabbruch (Add-on-Scheduler). */
+export function haEntityStateIsUnavailable(s) {
+  return String(s ?? '').trim().toLowerCase() === 'unavailable';
+}
+
+/** UI: Verbindungsverlust / keine Daten wie „Nicht erreichbar“ anzeigen. */
+export function haEntityStateIsUnreachableUi(s) {
+  const x = String(s ?? '').trim().toLowerCase();
+  return x === 'unavailable' || x === 'unknown';
+}
+
+/**
+ * Kleinschreibung + NFD ohne kombinierende Zeichen (ö→o), damit „Öffnen“/„offen“/„Oeffnen“ gleichwertig sind.
+ */
+export function haStateNormForMatch(raw) {
+  return String(raw ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '');
+}
+
+/** Text-Sensor meldet Klappe offen (ESPHome variiert Schreibweisen). */
+export function vollzugTextMeansOpen(raw) {
+  if (raw == null || raw === '') return false;
+  const s = String(raw).toLowerCase();
+  const n = haStateNormForMatch(raw);
+  return (
+    n.includes('offen') ||
+    n.includes('oeffnen') ||
+    n.includes('offnen') || // NFD von „öffnen“ ohne Diakritika
+    s.includes('öffnen') ||
+    n === 'open'
+  );
+}
+
+/** Text-Sensor meldet Klappe geschlossen. */
+export function vollzugTextMeansClosed(raw) {
+  if (raw == null || raw === '') return false;
+  const s = String(raw).toLowerCase();
+  const n = haStateNormForMatch(raw);
+  return (
+    n.includes('geschlossen') ||
+    n.includes('schliessen') ||
+    s.includes('schließen') ||
+    n.includes('closed')
+  );
+}
+
+export function vollzugStatusOpenOk(statusState, zustandState, statusEntity, zustandEntity) {
+  const ok = (raw, configured) => !configured || vollzugTextMeansOpen(raw);
+  return ok(statusState, !!statusEntity) && ok(zustandState, !!zustandEntity);
+}
+
+export function vollzugStatusCloseOk(statusState, zustandState, statusEntity, zustandEntity) {
+  const ok = (raw, configured) => !configured || vollzugTextMeansClosed(raw);
+  return ok(statusState, !!statusEntity) && ok(zustandState, !!zustandEntity);
+}
